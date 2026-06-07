@@ -48,10 +48,11 @@ module systolic_array_mult#(
     )(
     input logic reset,
     input logic clk,
+    input logic[15:0] array_A[ROWS-1:0][COLS-1:0],
+    input logic[15:0] array_B[ROWS-1:0][COLS-1:0],
     output logic[15:0] c_matrix[ROWS-1:0][COLS-1:0]
     );
-    logic[15:0] array_A[ROWS-1:0][COLS-1:0];
-    logic[15:0] array_B[ROWS-1:0][COLS-1:0];
+   
     logic[15:0] a;
     logic done;
     
@@ -72,37 +73,47 @@ module systolic_array_mult#(
          .in_data(array_B),
          .out_data(array_B_out)
      );
+     
+    
+     
+//     BF16_pe_unit BF16_pe_unit_inst(
+//        .A(),
+//        .B(),
+//        .clk(),
+//        .reset(),
+//        .S()
+//     );
    
      counter counter_inst(
         .reset(reset), 
         .clk(clk),
         .done(done)
 );
-    always_ff @(posedge clk)
-    begin
-        if(reset)begin
-            foreach(array_A[i,j])
-            begin
-                array_A[i][j] <= 16'hFFFF;
-                array_B[i][j] <= 16'hFFFF;
-            end
-           // done <= 1'b0;
-        end
-        else
-        begin
-//            array_A[0] <= {0,array_A[0][0:3]};
-//            array_A[1] <= {0,array_A[1][0:3]};
-//            array_A[2] <= {0,array_A[2][0:3]};
+//    always_ff @(posedge clk)
+//    begin
+//        if(reset)begin
+//            foreach(array_A[i,j])
+//            begin
+//                array_A[i][j] <= 16'hFFFF;
+//                array_B[i][j] <= 16'hFFFF;
+//            end
+//           // done <= 1'b0;
+//        end
+//        else
+//        begin
+////            array_A[0] <= {0,array_A[0][0:3]};
+////            array_A[1] <= {0,array_A[1][0:3]};
+////            array_A[2] <= {0,array_A[2][0:3]};
             
-//            array_B[4] <= array_B[3];
-//            array_B[3] <= array_B[2];
-//            array_B[2] <= array_B[1];
-//            array_B[1] <= array_B[0];
-//            array_B[0] <= '{0,0,0};
-//            foreach(array_A_out[i,j])
-//                array_A_out[i][j] <= 16'b0;
-        end
-    end
+////            array_B[4] <= array_B[3];
+////            array_B[3] <= array_B[2];
+////            array_B[2] <= array_B[1];
+////            array_B[1] <= array_B[0];
+////            array_B[0] <= '{0,0,0};
+////            foreach(array_A_out[i,j])
+////                array_A_out[i][j] <= 16'b0;
+//        end
+//    end
 
     logic[15:0] a_grid  [ROWS-1][COLS-1];
     logic[15:0] b_grid [ROWS-1][COLS-1];
@@ -143,6 +154,26 @@ module systolic_array_mult#(
             end
         end
     end
+    
+    
+    genvar k,l;
+     
+     generate
+        for(k = 0; k < 16; k++)
+        begin
+            for( l = 0; l < 16; l++)
+            begin
+                  BF16_pe_unit BF16_pe_unit_inst(
+                    .A(a_grid[k][l]),
+                    .B(b_grid[k][l]),
+                    .clk(clk),
+                    .reset(reset),
+                    .S(acc_grid[k][l])
+                 );
+            end
+        end
+          
+     endgenerate
     
     
 
