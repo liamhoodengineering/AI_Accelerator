@@ -8,30 +8,21 @@ module skew_buffer_horizontal #(
     input  logic                clk,
     input  logic                reset,
     input  logic [DATA_W-1:0]   in_data  [ROWS-1:0][COLS-1:0],
-    output logic [15:0] out_data [ROWS-1:0][ROWS+COLS-2:0]
+    output logic [15:0]         out_data [ROWS-1:0][ROWS+COLS-2:0]
 );
 
-  
-   logic[15:0] matrix_tmp[ROWS][COLS+15];
-    int i,j;
-    always_ff @(posedge clk) begin
-        if (reset) begin
-           foreach(out_data[i,j])
-                matrix_tmp[i][j] <= {DATA_W{1'b0}};
-           
-        end
-        else begin
-           foreach(in_data[i,j])
-           begin
-                matrix_tmp[i][j+(DATA_W-2-i)] = in_data[i][j];
-           end
-        end
-    end
+    int i, j;
 
+    // Pure combinational 2-D reshape: row i of in_data is overlaid into
+    // out_data starting at column (DATA_W-1-i). Default the rest to zero so
+    // the unwritten cells of the skewed layout read as 0. No clock / reset
+    // dependency -- consumers see a valid skewed view in the same delta
+    // cycle that in_data is driven.
     always_comb begin
-
-        foreach(out_data[i,j])
-            out_data[i][j] = matrix_tmp[i][j];
+        foreach (out_data[i, j])
+            out_data[i][j] = '0;
+        foreach (in_data[i, j])
+            out_data[i][j + (DATA_W - 1 - i)] = in_data[i][j];
     end
 
 endmodule
@@ -45,30 +36,18 @@ module skew_buffer_vertical #(
     input  logic                clk,
     input  logic                reset,
     input  logic [DATA_W-1:0]   in_data  [ROWS-1:0][COLS-1:0],
-    output logic [15:0] out_data [ROWS+COLS-2:0][COLS-1:0]
+    output logic [15:0]         out_data [ROWS+COLS-2:0][COLS-1:0]
 );
 
+    int i, j;
 
-   logic[15:0] matrix_tmp[ROWS+15][COLS];
-    int i,j;
-    always_ff @(posedge clk) begin
-        if (reset) begin
-           foreach(out_data[i,j])
-                matrix_tmp[i][j] <= {DATA_W{1'b0}};
-
-        end
-        else begin
-           foreach(in_data[i,j])
-           begin
-                matrix_tmp[i+(DATA_W-2-j)][j] = in_data[i][j];
-           end
-        end
-    end
-
+    // Symmetric combinational reshape on the column axis: column j of
+    // in_data is overlaid into out_data starting at row (DATA_W-2-j).
     always_comb begin
-
-        foreach(out_data[i,j])
-            out_data[i][j] = matrix_tmp[i][j];
+        foreach (out_data[i, j])
+            out_data[i][j] = '0;
+        foreach (in_data[i, j])
+            out_data[i + (DATA_W - 2 - j)][j] = in_data[i][j];
     end
 
 endmodule

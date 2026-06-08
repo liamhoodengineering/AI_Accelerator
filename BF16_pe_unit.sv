@@ -40,7 +40,7 @@ module BF16_pe_unit(
         
         accumulate <= reset ? 16'b0 : sum;
     end
-    
-    BF16_Mult_Unit(.A(A), .B(B), .C(product));
-    BF16_Add_Unit(.A(product), .B(accumulate), .C(S));
+    assign S = sum;
+    BF16_Mult_Unit BF16_Mult_Unit_inst(.A(A), .B(B), .C(product));
+    BF16_Add_Unit BF16_Add_Unit_inst(.A(product), .B(accumulate), .C(sum));
 endmodule

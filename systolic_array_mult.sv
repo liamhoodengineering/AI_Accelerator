@@ -64,7 +64,7 @@ module systolic_array_mult#(
          .clk(clk),
          .reset(reset),
          .in_data(array_A),
-         .out_data(array_A_out)
+             .out_data(array_A_out)
      );
      
      skew_buffer_vertical skew_vert_inst(
@@ -129,7 +129,7 @@ module systolic_array_mult#(
                 for(int j = 0; j < COLS; j++) begin
                     a_grid[i][j]   <= 16'b0;
                     b_grid[i][j]   <= 16'b0;
-                    acc_grid[i][j] <= 16'b0;
+              //      acc_grid[i][j] <= 16'b0;
                 end
             end
         end
@@ -142,13 +142,13 @@ module systolic_array_mult#(
                 for(int i = 0; i < ROWS; i++) begin
                     for(int j = 0; j < COLS; j++) begin
                         // A flows left -> right; left edge pulls from array_A column 4
-                        a_grid[i][j] <= (j == 0) ? array_A[i][4] : a_grid[i][j-1];
+                        a_grid[i][j] <= (j == 0) ? array_A_out[i][15] : a_grid[i][j-1];
     
                         // B flows top -> bottom; top edge pulls from array_B row 4
-                        b_grid[i][j] <= (i == 0) ? array_B[4][j] : b_grid[i-1][j];
+                        b_grid[i][j] <= (i == 0) ? array_B_out[ROWS-1][j] : b_grid[i-1][j];
     
                         // Local MAC at each PE
-                        acc_grid[i][j] <= acc_grid[i][j] + a_grid[i][j] * b_grid[i][j];
+                        //acc_grid[i][j] <= acc_grid[i][j] + a_grid[i][j] * b_grid[i][j];
                     end
                 end
             end
@@ -186,13 +186,13 @@ module counter(
     output logic done
 );
 
-    logic[3:0] counter;
+    logic[5:0] counter;
     
     always_ff @(posedge clk)
     begin
-         counter <= reset ? 4'b0 : (counter + 4'd1);
+         counter <= reset ? 6'b0 : (counter + 6'd1);
     end
     
-    assign done = (counter == 4'd8) ? 1'b1 : 1'b0;
+    assign done = (counter == 6'd47) ? 1'b1 : 1'b0;
 
 endmodule
