@@ -39,10 +39,13 @@ module skew_buffer_tb(
             end
         end
 
-        // Compute golden output: row i shifted right by (ROWS-1-i), zeros elsewhere.
+        // Compute golden output: row i shifted right by i, zeros elsewhere.
+        // (Canonical output-stationary skew: row 0 has no delay, row ROWS-1
+        // is delayed by ROWS-1 cycles -- matches skew_buffer_horizontal's
+        // out_data[i][j+i] = in_data[i][j].)
         for (int i = 0; i < ROWS; i++) begin
             int shift;
-            shift = ROWS - 1 - i;
+            shift = i;
             for (int k = 0; k < OUT_C; k++) begin
                 if (k >= shift && k < shift + COLS)
                     expected_out[i][k] = in_data[i][k - shift];
@@ -67,14 +70,16 @@ module skew_buffer_tb(
             end
         end
 
-        // Reset sanity check: assert reset, deassert, sample before driving new data.
-        @(negedge clk); reset = 1'b1;
-        @(negedge clk); reset = 1'b0;
+        // Zero-input sanity check: the DUT is combinational, so out_data
+        // follows in_data; clear in_data and verify out_data goes to zero.
+        for (int i = 0; i < ROWS; i++)
+            for (int j = 0; j < COLS; j++)
+                in_data[i][j] = '0;
         #1;
         for (int i = 0; i < ROWS; i++) begin
             for (int k = 0; k < OUT_C; k++) begin
                 if (out_data[i][k] !== '0) begin
-                    $display("FAIL reset row=%0d col=%0d got=%0d exp=0",
+                    $display("FAIL zero-input row=%0d col=%0d got=%0d exp=0",
                              i, k, out_data[i][k]);
                     errors++;
                 end

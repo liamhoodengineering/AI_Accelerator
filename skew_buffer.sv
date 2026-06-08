@@ -14,15 +14,15 @@ module skew_buffer_horizontal #(
     int i, j;
 
     // Pure combinational 2-D reshape: row i of in_data is overlaid into
-    // out_data starting at column (DATA_W-1-i). Default the rest to zero so
-    // the unwritten cells of the skewed layout read as 0. No clock / reset
-    // dependency -- consumers see a valid skewed view in the same delta
-    // cycle that in_data is driven.
+    // out_data starting at column i (canonical output-stationary skew --
+    // row 0 has no delay, row ROWS-1 is delayed by ROWS-1 cycles). The
+    // wavefront propagates left-to-right from PE(0,0) when consumed by a
+    // systolic grid.
     always_comb begin
         foreach (out_data[i, j])
             out_data[i][j] = '0;
         foreach (in_data[i, j])
-            out_data[i][j + (DATA_W - 1 - i)] = in_data[i][j];
+            out_data[i][j + i] = in_data[i][j];
     end
 
 endmodule
@@ -42,12 +42,15 @@ module skew_buffer_vertical #(
     int i, j;
 
     // Symmetric combinational reshape on the column axis: column j of
-    // in_data is overlaid into out_data starting at row (DATA_W-2-j).
+    // in_data is overlaid into out_data starting at row j (canonical
+    // output-stationary skew -- col 0 has no delay, col COLS-1 is delayed by
+    // COLS-1 cycles). Pairs with horizontal's row-i offset so PE(i,j)
+    // sees A[i][k] and B[k][j] aligned in the same cycle.
     always_comb begin
         foreach (out_data[i, j])
             out_data[i][j] = '0;
         foreach (in_data[i, j])
-            out_data[i + (DATA_W - 2 - j)][j] = in_data[i][j];
+            out_data[i + j][j] = in_data[i][j];
     end
 
 endmodule

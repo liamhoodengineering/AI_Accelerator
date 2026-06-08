@@ -39,10 +39,13 @@ module skew_buffer_vertical_tb(
             end
         end
 
-        // Golden output: column j shifted down by (COLS-1-j), zeros elsewhere.
+        // Golden output: column j shifted down by j, zeros elsewhere.
+        // (Canonical output-stationary skew: col 0 has no delay, col COLS-1
+        // is delayed by COLS-1 cycles -- matches skew_buffer_vertical's
+        // out_data[i+j][j] = in_data[i][j].)
         for (int j = 0; j < COLS; j++) begin
             int shift;
-            shift = COLS - 1 - j;
+            shift = j;
             for (int r = 0; r < OUT_R; r++) begin
                 if (r >= shift && r < shift + ROWS)
                     expected_out[r][j] = in_data[r - shift][j];
@@ -67,14 +70,16 @@ module skew_buffer_vertical_tb(
             end
         end
 
-        // Reset sanity check.
-        @(negedge clk); reset = 1'b1;
-        @(negedge clk); reset = 1'b0;
+        // Zero-input sanity check: the DUT is combinational, so out_data
+        // follows in_data; clear in_data and verify out_data goes to zero.
+        for (int i = 0; i < ROWS; i++)
+            for (int j = 0; j < COLS; j++)
+                in_data[i][j] = '0;
         #1;
         for (int r = 0; r < OUT_R; r++) begin
             for (int j = 0; j < COLS; j++) begin
                 if (out_data[r][j] !== '0) begin
-                    $display("FAIL reset row=%0d col=%0d got=%0d exp=0",
+                    $display("FAIL zero-input row=%0d col=%0d got=%0d exp=0",
                              r, j, out_data[r][j]);
                     errors++;
                 end
