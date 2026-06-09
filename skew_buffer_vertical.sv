@@ -8,30 +8,21 @@ module skew_buffer_vertical #(
     input  logic                clk,
     input  logic                reset,
     input  logic [DATA_W-1:0]   in_data  [ROWS-1:0][COLS-1:0],
-    output logic [DATA_W-1:0]   out_data [ROWS+(COLS-2):0][COLS-1:0]
+    output logic [15:0]         out_data [ROWS+COLS-2:0][COLS-1:0]
 );
 
-  
-   logic[DATA_W-1:0] matrix_tmp[ROWS+15][COLS];
-    int i,j;
-    always_ff @(posedge clk) begin
-        if (reset) begin
-           foreach(out_data[i,j])
-                matrix_tmp[i][j] <= {DATA_W{1'b0}};
-           
-        end
-        else begin
-           foreach(in_data[i,j])
-           begin
-                matrix_tmp[i+(COLS-1-j)][j] = in_data[i][j];
-           end
-        end
-    end
+    int i, j;
 
+    // Symmetric combinational reshape on the column axis: column j of
+    // in_data is overlaid into out_data starting at row j (canonical
+    // output-stationary skew -- col 0 has no delay, col COLS-1 is delayed by
+    // COLS-1 cycles). Pairs with horizontal's row-i offset so PE(i,j)
+    // sees A[i][k] and B[k][j] aligned in the same cycle.
     always_comb begin
-        
-        foreach(out_data[i,j])
-            out_data[i][j] = matrix_tmp[i][j];
+        foreach (out_data[i, j])
+            out_data[i][j] = '0;
+        foreach (in_data[i, j])
+            out_data[i + j][j] = in_data[i][j];
     end
 
 endmodule
