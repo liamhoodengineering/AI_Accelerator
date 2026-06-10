@@ -43,21 +43,11 @@ module softermax(
     logic        new_max;
     logic [15:0] neg_logit, delta;
     logic [3:0]  delta_int;
-    logic [11:0] delta_frac;                 // unused — reserved for future 2^-frac LUT
-    logic [15:0] pow2_neg_delta;
-    logic [15:0] sum_scaled, sum_plus_term, sum_new_max, sum_new_max_1;
-    
-    logic[15:0] frac_out;
-    
-    
-    fractional_bit_shift fractional_bit_shift_inst(
-        .delta_frac(delta_frac),
-        .frac_out(frac_out)
-    );
-    
-    
-    
-    
+    logic [11:0] delta_frac;
+    logic [15:0] pow2_neg_delta;          // 2^(-delta_int) only
+    logic [15:0] pow2_neg_delta_full;     // 2^(-delta_int) * 2^(-delta_frac) = 2^(-|delta|)
+    logic [15:0] frac_out;                // ~ 2^(-delta_frac)
+    logic [15:0] sum_scaled, sum_plus_term, sum_new_max;
 
     always_comb
     begin
@@ -68,19 +58,22 @@ module softermax(
     assign neg_logit = logits[counter] ^ 16'h8000;
     assign new_max   = $signed({~logits[counter][15], logits[counter][14:0]})
                      > $signed({~max[15],             max[14:0]});
-                     
-    
 
     BF16_Add_Unit  u_sub      (.A(max), .B(neg_logit), .C(delta));
     decimal_decomp u_decomp   (.matrix_a(delta), .new_int(delta_int), .new_decimal(delta_frac));
 
     assign pow2_neg_delta = {1'b0, 8'd127 - {4'b0, delta_int}, 7'b0};
 
-    BF16_Mult_Unit u_mul      (.A(sum),        .B(pow2_neg_delta), .C(sum_scaled));
-    BF16_Add_Unit  u_add_one  (.A(sum_scaled), .B(16'h3F80),       .C(sum_new_max));
-    BF16_Mult_Unit frac_mul_1      (.A(frac_out),        .B(sum_new_max), .C(sum_new_max_1));
-    BF16_Add_Unit  u_add_term (.A(sum),        .B(pow2_neg_delta), .C(sum_plus_term));
-    BF16_Mult_Unit frac_mul_2      (.A(frac_out),        .B(sum_plus_term), .C(sum_plus_term_1));
+    fractional_bit_shift u_frac (.delta_frac(delta_frac), .frac_out(frac_out));
+
+    // Fold the 2^(-frac) correction into pow2_neg_delta BEFORE the +1.0 / +sum,
+    // so the math is  1 + sum*2^(-delta)  and  sum + 2^(-delta), not
+    // (1 + sum*2^(-int)) * 2^(-frac).
+    BF16_Mult_Unit u_frac_mul (.A(pow2_neg_delta), .B(frac_out),            .C(pow2_neg_delta_full));
+
+    BF16_Mult_Unit u_mul      (.A(sum),            .B(pow2_neg_delta_full), .C(sum_scaled));
+    BF16_Add_Unit  u_add_one  (.A(sum_scaled),     .B(16'h3F80),            .C(sum_new_max));
+    BF16_Add_Unit  u_add_term (.A(sum),            .B(pow2_neg_delta_full), .C(sum_plus_term));
 
     always_ff @(posedge clk)
     begin
@@ -93,26 +86,54 @@ module softermax(
         else
         begin
             counter <= counter + 4'd1;
-            sum     <= new_max ? sum_new_max_1     : sum_plus_term_1;
+            sum     <= new_max ? sum_new_max     : sum_plus_term;
             max     <= new_max ? logits[counter] : max;
         end
     end
 endmodule
 
 module fractional_bit_shift(
-    input logic[11:0] delta_frac, 
-    output logic[15:0] frac_out
+    input  logic [11:0] delta_frac,        // Q0.12 fixed-point, value = delta_frac/4096 in [0,1)
+    output logic [15:0] frac_out           // bf16 ~ 2^(-delta_frac)
     );
 
-    logic[15:0] a_zero, a_one, a_two;
-    assign a_zero = 16'h3F80;
-    assign a_one = 16'h3F28;
-    assign a_two = 16'h3EB0;
-    logic[15:0] temp_1, temp_2, temp_3, temp_4;
-    BF16_Mult_Unit  horner_eq_1      (.A(a_two), .B({{4{1'b0}},delta_frac}), .C(temp_1));
-    BF16_Add_Unit  horner_eq_2      (.A(temp_1), .B(a_one), .C(temp_2));
-    BF16_Mult_Unit  horner_eq_3      (.A(temp_2), .B({{4{1'b0}},delta_frac}), .C(temp_3));
-    BF16_Add_Unit  horner_eq_4      (.A(temp_3), .B(a_zero), .C(frac_out));
+    // ----------------------------------------------------------------
+    // Q0.12 -> bf16 conversion (priority-encode leading 1, normalize)
+    // ----------------------------------------------------------------
+    logic [3:0]  lead;        // position of MSB-most '1' in delta_frac (0..11)
+    logic [11:0] shifted;     // delta_frac shifted so the leading 1 sits at bit 11
+    logic [7:0]  exp_field;
+    logic [6:0]  mant_field;
+    logic [15:0] frac_bf16;
+
+    always_comb begin
+        lead = 4'd0;
+        for (int i = 0; i < 12; i++) begin
+            if (delta_frac[i]) lead = i[3:0];   // last write wins -> highest set bit
+        end
+    end
+
+    assign shifted    = delta_frac << (4'd11 - lead);
+    assign mant_field = shifted[10:4];
+    // value = 2^(lead - 12) * (1.mantissa)  ->  biased exp = 127 + (lead - 12) = lead + 115
+    assign exp_field  = 8'd115 + {4'b0000, lead};
+    assign frac_bf16  = (delta_frac == 12'd0) ? 16'h0000 : {1'b0, exp_field, mant_field};
+
+    // ----------------------------------------------------------------
+    // Horner evaluation of a minimax fit to 2^(-f) on f in [0,1]:
+    //   2^(-f) ~ 1 - 0.6585*f + 0.1565*f^2
+    //   (q(0)=1.0, q(1)~0.498, q(0.5)~0.710)
+    // ----------------------------------------------------------------
+    logic [15:0] a_zero, a_one, a_two;
+    assign a_zero = 16'h3F80;   // +1.0
+    assign a_one  = 16'hBF29;   // -0.6585
+    assign a_two  = 16'h3E20;   // +0.1565
+
+    logic [15:0] temp_1, temp_2, temp_3;
+    BF16_Mult_Unit horner_eq_1 (.A(a_two),  .B(frac_bf16), .C(temp_1));
+    BF16_Add_Unit  horner_eq_2 (.A(temp_1), .B(a_one),     .C(temp_2));
+    BF16_Mult_Unit horner_eq_3 (.A(temp_2), .B(frac_bf16), .C(temp_3));
+    BF16_Add_Unit  horner_eq_4 (.A(temp_3), .B(a_zero),    .C(frac_out));
 
 endmodule
 
@@ -121,16 +142,20 @@ module decimal_decomp(
     output logic [3:0]  new_int,
     output logic [11:0] new_decimal
 );
-    // bf16: [15]=sign, [14:7]=exp, [6:0]=mantissa; value = 1.mantissa * 2^(exp-127).
-    // base places the implicit '1' at bit 19; right-shift by (134 - exp) lands
-    // bit 12 of the result on 2^0, giving Q4.12 in the low 16 bits.
-    // For exp > 134 (value >= 256) the left-shift arm produces a wrapped result.
-    logic [7:0]  exp     = matrix_a[14:7];
-    logic [19:0] base    = {1'b1, matrix_a[6:0], 12'b0};
-    logic [19:0] shifted = (exp <= 8'd134) ? (base >> (8'd134 - exp))
-                                           : (base << (exp  - 8'd134));
+    logic [7:0]  exp;
+    logic [19:0] base;
+    logic [19:0] shifted;
 
-    assign {new_int, new_decimal} = shifted[15:0];
+    assign exp  = matrix_a[14:7];
+    assign base = {1'b1, matrix_a[6:0], 12'b0};
+
+    assign shifted = (exp <= 8'd134)
+                   ? (base >> (8'd134 - exp))
+                   : (base << (exp - 8'd134));
+
+    assign new_int     = shifted[15:12];
+    assign new_decimal = shifted[11:0];
+
 endmodule
 
 
