@@ -55,12 +55,12 @@ module softermax(
             logits_out[i] = logits[i] / sum;
     end
 
-    assign neg_logit = logits[counter] ^ 16'h8000;
-    assign new_max   = $signed({~logits[counter][15], logits[counter][14:0]})
-                     > $signed({~max[15],             max[14:0]});
-
-    BF16_Add_Unit  u_sub      (.A(max), .B(neg_logit), .C(delta));
-    decimal_decomp u_decomp   (.matrix_a(delta), .new_int(delta_int), .new_decimal(delta_frac));
+    assign neg_logit = logits[counter] ^ 16'h8000;//negates logit value
+   
+    assign new_max   = $signed({logits[counter][15], logits[counter][14:0]})
+                     > $signed({max[15],             max[14:0]});//decides if current iteration of logits is larger than max
+    BF16_Add_Unit  u_sub      (.A(max), .B(neg_logit), .C(delta));//delta = max - logits[counter]
+    decimal_decomp u_decomp   (.matrix_a(delta), .new_int(delta_int), .new_decimal(delta_frac));//extract integer and decimal porions from delta
 
     assign pow2_neg_delta = {1'b0, 8'd127 - {4'b0, delta_int}, 7'b0};
 
@@ -92,8 +92,8 @@ module softermax(
     end
 endmodule
 
-module fractional_bit_shift(
-    input  logic [11:0] delta_frac,        // Q0.12 fixed-point, value = delta_frac/4096 in [0,1)
+module fractional_bit_shift(//applys horner algorithm for approximating 2^frac
+    input  logic [11:0] delta_frac,        // 12-bit value from decimal_decomp unit
     output logic [15:0] frac_out           // bf16 ~ 2^(-delta_frac)
     );
 
