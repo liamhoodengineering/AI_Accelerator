@@ -118,10 +118,18 @@ module top(
     generate
         for (bank = 0; bank < 4; bank++) begin : q_banks
             Q_bank Q_bank_inst (
-                .clka (clk),  .addra(addr_q_1[bank]), .dina(din_q_1[bank]),
-                .douta(dout_q_1[bank]), .rsta(Reset), .wea(wea_q),
-                .clkb (clk),  .addrb(addr_q_2[bank]), .dinb(32'b0),
-                .doutb(dout_q_2[bank]), .rstb(Reset), .web(web_q)
+                .clka (clk),  
+                .addra(addr_q_1[bank]), 
+                .dina(din_q_1[bank]),
+                .douta(dout_q_1[bank]), 
+                .rsta(Reset), 
+                .wea(wea_q),
+                .clkb (clk),  
+                .addrb(addr_q_2[bank]), 
+                .dinb(32'b0),
+                .doutb(dout_q_2[bank]), 
+                .rstb(Reset), 
+                .web(web_q)
             );
         end
 
@@ -143,13 +151,30 @@ module top(
         end
     endgenerate
     
+    logic[15:0] logits[16][16];
+    
     
     systolic_array_mult systolic_array_mult_inst(
         .reset(Reset),
         .clk(clk),
-        .array_A(),
-        .array_B(),
-        .c_matrix()
+        .array_A(q_tile_lut),
+        .array_B(k_tile_lut),
+        .c_matrix(logits)
     );
+    
+    logic[15:0] logits_normalized[16][16];
+    
+    genvar softmax;
+    generate
+        for(softmax = 0; softmax < 16; softmax++)
+        begin
+            softermax normalized_inst(
+                .logits(logits[softmax]),
+                .clk(clk),
+                .Reset(Reset),
+                .logits_out(logits_normalized[softmax])
+            );
+        end
+    endgenerate
 
 endmodule
