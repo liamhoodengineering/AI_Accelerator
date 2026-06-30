@@ -21,7 +21,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 module top(
-    input  logic        clk,
+    input  logic        clk,//100mHz
     input  logic        Reset,
 
     // Test-phase controls
