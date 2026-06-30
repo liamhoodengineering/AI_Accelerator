@@ -12,6 +12,7 @@ module BRAM_TO_LUT_TB();
     BRAM_to_LUTRAM dut (
         .clk        (clk),
         .reset      (reset),
+        .row        (6'd0),
         .wea_q      (wea),
         .web_q      (web),
         .input_data (input_data),
@@ -28,20 +29,22 @@ module BRAM_TO_LUT_TB();
         wea   = 4'h0;
         web   = 4'h0;
 
-        @(posedge clk);
+        // Hold reset long enough for sync-reset processing to start cleanly
+        repeat (10) @(posedge clk);
         reset = 1'b0;
-        @(posedge clk);
 
-        // Single-cycle parallel write to all 4 banks via both ports
+        // Wait for rsta_busy / rstb_busy to clear (Xilinx BMG ~4 cycles; 10 for margin)
+        repeat (10) @(posedge clk);
+
+        // Parallel write to all 4 banks via both ports — hold WE for 3 cycles
         wea = 4'hF;
         web = 4'hF;
-        @(posedge clk);
+        repeat (1) @(posedge clk);
         wea = 4'h0;
         web = 4'h0;
 
-        // BRAM read latency
-        @(posedge clk);
-        @(posedge clk);
+        // BRAM read latency (1 cycle with no output register; pad for safety)
+        repeat (1) @(posedge clk);
 
         // One $display per bank — covers both dual-port reads
         for (i = 0; i < 4; i = i + 1) begin

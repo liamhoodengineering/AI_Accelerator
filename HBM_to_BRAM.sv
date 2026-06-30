@@ -224,24 +224,177 @@ module HBM_to_BRAM(
             read_resp_out <= S_AXI_00_RRESP;
         end
     end
+    
+    
+    logic[3:0] wea_q, web_q;
 
-
+BRAM_parsing BRAM_parsing_inst(
+    .clk(clk),
+    .reset(reset),
+    .wea_q(wea_q),
+    .web_q(web_q),
+    .row(),
+    .input_data(),
+    .dout_1(),
+    .dout_2()
+    
+);
 
     
 endmodule
 
-
-
 module BRAM_parsing(
-    input logic[255:0] data_i,
-    output logic[31:0] data_o[8]);
-    
-   generate
-    genvar i;
-        for(i = 0; i < 8; i++)
-        begin
-            assign data_o[i] = data_i[(15+(i*16)):(i*16)];
+    input  logic         clk,
+    input  logic         reset,
+    input  logic [3:0]   wea_q,
+    input  logic [3:0]   web_q,
+    input  logic [5:0]   row,
+    input  logic [255:0] input_data,
+    output logic [31:0]  dout_1 [4],   // port A from each bank
+    output logic [31:0]  dout_2 [4]    // port B from each bank
+);
+
+    genvar bank;
+    generate
+        for (bank = 0; bank < 4; bank++) begin : q_banks
+            Q_bank Q_bank_inst (
+                .clka  (clk),
+                .rsta  (reset),
+                .wea   (wea_q),
+                .addra (row<<1),
+                .dina  (input_data[bank*64      +: 32]),
+                .douta (dout_1[bank]),
+                .clkb  (clk),
+                .rstb  (reset),
+                .web   (web_q),
+                .addrb ((row<<1)+6'h1),
+                .dinb  (input_data[bank*64 + 32 +: 32]),
+                .doutb (dout_2[bank])
+            );
         end
     endgenerate
-    
+
+endmodule
+
+
+module FSM_tile_counter
+(
+     input logic clk,
+     input logic reset,
+     output logic[5:0] row
+     
+);
+
+parameter [4:0]
+        IDLE  = 5'b00000,
+        ROW_1 = 5'b00001,
+        ROW_2 = 5'b00010,
+        ROW_3 = 5'b00011,
+        ROW_4 = 5'b00100,
+        ROW_5 = 5'b00101,
+        ROW_6 = 5'b00110,
+        ROW_7 = 5'b00111,
+        ROW_8 = 5'b01000,
+        ROW_9 = 5'b01001,
+        ROW_10 = 5'b01010,
+        ROW_11 = 5'b01011,
+        ROW_12 = 5'b01100,
+        ROW_13 = 5'b01101,
+        ROW_14 = 5'b01110,
+        ROW_15 = 5'b01111,
+        ROW_16 = 5'b10000;
+
+logic [4:0] state;
+
+always_ff @(posedge clk)
+begin
+    if(reset)
+        state <= IDLE;
+    else
+    begin
+        case(state)
+            IDLE:
+                state <= ROW_1;
+            ROW_1:
+                state <= ROW_2;
+            ROW_2:
+                state <= ROW_3;
+            ROW_3:
+                state <= ROW_4;
+            ROW_4:
+                state <= ROW_5;
+            ROW_5:
+                state <= ROW_6;
+            ROW_6:
+                state <= ROW_7;
+            ROW_7:
+                state <= ROW_8;
+            ROW_8:
+                state <= ROW_9;
+            ROW_9:
+                state <= ROW_10;
+            ROW_10:
+                state <= ROW_11;
+            ROW_11:
+                state <= ROW_12;
+            ROW_12:
+                state <= ROW_13;
+            ROW_13:
+                state <= ROW_14;
+            ROW_14:
+                state <= ROW_15;
+            ROW_15:
+                state <= ROW_16;
+            ROW_16:
+                state <= IDLE;
+
+            default:
+                state <= IDLE;
+        endcase
+    end
+end
+
+always_comb
+begin
+    case(state)
+        IDLE:
+            row = 6'd0;
+        ROW_1:
+            row = 6'd0;
+        ROW_2:
+            row = 6'd1;
+        ROW_3:
+            row = 6'd2;
+        ROW_4:
+            row = 6'd3;
+        ROW_5:
+            row = 6'd4;
+        ROW_6:
+            row = 6'd5;
+        ROW_7:
+            row = 6'd6;
+        ROW_8:
+            row = 6'd7;
+        ROW_9:
+            row = 6'd8;
+        ROW_10:
+            row = 6'd9;
+        ROW_11:
+            row = 6'd10;
+        ROW_12:
+            row = 6'd11;
+        ROW_13:
+            row = 6'd12;
+        ROW_14:
+            row = 6'd13;
+        ROW_15:
+            row = 6'd14;
+        ROW_16:
+            row = 6'd15;
+
+        default:
+            row = 6'd0;
+    endcase
+end
+
 endmodule
