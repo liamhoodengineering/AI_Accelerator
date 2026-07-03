@@ -32,11 +32,13 @@ module HBM_to_BRAM(
     input  logic         reset,
     input  logic         HBM_REF_CLK_0,  // 100 MHz HBM PLL reference
     input  logic         APB_0_PCLK,     // 100 MHz APB clock
-    output logic [255:0] read_data_out,
+  //  output logic [255:0] read_data_out,
     output logic [1:0]   read_resp_out,
     output logic         apb_complete_0  // HBM calibration done
 
 );
+   
+    logic [255:0] read_data_out;
     
     logic S_AXI_00_ARVALID;
     logic[33:0] S_AXI_00_ARADDR;
@@ -169,6 +171,30 @@ module HBM_to_BRAM(
             endcase
         end
     end
+    
+    logic[31:0] dout_1[4];
+    logic[31:0] dout_2[4];
+    
+    //splits into 4 banks
+    genvar bank;
+    generate
+        for (bank = 0; bank < 4; bank++) begin : q_banks
+            Q_bank Q_bank_inst (
+                .clka  (clk),
+                .rsta  (reset),
+                .wea   (wea_q),
+                .addra (row<<1),
+                .dina  (read_data_out[bank*64      +: 32]),
+                .douta (dout_1[bank]),
+                .clkb  (clk),
+                .rstb  (reset),
+                .web   (web_q),
+                .addrb ((row<<1)+6'd1),
+                .dinb  (read_data_out[bank*64 + 32 +: 32]),
+                .doutb (dout_2[bank])
+            );
+        end
+    endgenerate
 
     // Output logic — safe defaults then per-state overrides
     always_comb begin
@@ -250,8 +276,8 @@ module BRAM_parsing(
     input  logic [3:0]   web_q,
     input  logic [5:0]   row,
     input  logic [255:0] input_data,
-    output logic [31:0]  dout_1 [4],   // port A from each bank
-    output logic [31:0]  dout_2 [4]    // port B from each bank
+    output logic [31:0]  dout_1 [16][4],   // port A from each bank
+    output logic [31:0]  dout_2 [16][4]    // port B from each bank
 );
 
     genvar bank;
@@ -397,4 +423,25 @@ begin
     endcase
 end
 
+endmodule
+
+module BRAM_TO_LUTRAM #
+(parameter int ROW = 16)
+(
+    input logic clk,
+    input logic[31:0] Q_bank_dout_1[ROW][4],
+    input logic[31:0] Q_bank_dout_2[ROW][4],
+    output logic[15:0] Q_LUTRAM[ROW][16]
+);
+ always_ff @(posedge clk)
+ begin
+    for(int i = 0; i < ROW; i++)
+    begin
+        for(int j = 0; j < 16; j++)
+        begin
+            {Q_LUTRAM[i][j+1],Q_LUTRAM[i][j]}  <= (j[0] == 0) ? Q_bank_dout_1[i][j] : Q_bank_dout_2[i][j];
+        end
+        
+    end
+end
 endmodule

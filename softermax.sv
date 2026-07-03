@@ -147,9 +147,9 @@ module decimal_decomp(
     logic [19:0] shifted;
 
     assign exp  = matrix_a[14:7];
-    assign base = {1'b1, matrix_a[6:0], 12'b0};
+    assign base = {1'b1, matrix_a[6:0], 12'b0};//implicit leading 1
 
-    assign shifted = (exp <= 8'd134)
+    assign shifted = (exp <= 8'd134)//could be wrong
                    ? (base >> (8'd134 - exp))
                    : (base << (exp - 8'd134));
 

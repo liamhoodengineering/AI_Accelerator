@@ -6,18 +6,15 @@ module skew_buffer_tb(
     localparam int ROWS   = 16;
     localparam int COLS   = 16;
     localparam int DATA_W = 16;
-    localparam int OUT_C  = COLS + ROWS - 1;   // 31
 
     logic                clk;
     logic                reset;
-    logic [DATA_W-1:0]   in_data      [ROWS][COLS];
-    logic [DATA_W-1:0]   out_data     [ROWS][OUT_C];
-    logic [DATA_W-1:0]   expected_out [ROWS][OUT_C];
+    logic [DATA_W-1:0]   in_data  [ROWS][COLS];
+    logic [DATA_W-1:0]   out_data [ROWS][COLS];
     int                  errors;
 
-    skew_buffer_horizontal #(
+    skew_buffer #(
         .ROWS(ROWS),
-        .COLS(COLS),
         .DATA_W(DATA_W)
     ) dut (
         .clk(clk),
@@ -27,70 +24,70 @@ module skew_buffer_tb(
 
     always #5 clk = ~clk;
 
+    // Expected outputs sampled just after each posedge clk.
+    // Row index = cycle (0..7), column index = lane (0..2).
+    logic [DATA_W-1:0] expected_out [8][ROWS] = '{
+        '{16'd10, 16'd0,  16'd0},
+        '{16'd11, 16'd20, 16'd0},
+        '{16'd12, 16'd21, 16'd30},
+        '{16'd13, 16'd22, 16'd31},
+        '{16'd14, 16'd23, 16'd32},
+        '{16'd15, 16'd24, 16'd33},
+        '{16'd16, 16'd25, 16'd34},
+        '{16'd17, 16'd26, 16'd35}
+    };
+
     initial begin
-        clk    = 1'b0;
-        reset  = 1'b1;
-        errors = 0;
+        clk     = 1'b0;
+        reset   = 1'b1;
+        in_data = {'{16'd10, 16'd20, 16'd30},
+                  '{16'd11, 16'd21, 16'd31},
+                  '{16'd12, 16'd22, 16'd32},
+                  '{16'd13, 16'd23, 16'd33},
+                  '{16'd14, 16'd24, 16'd34},
+                  '{16'd15, 16'd25, 16'd35},
+                  '{16'd25, 16'd35, 16'd45}};
+        errors  = 0;
 
-        // Populate input with a deterministic non-zero pattern: 1..256.
-        for (int i = 0; i < ROWS; i++) begin
-            for (int j = 0; j < COLS; j++) begin
-                in_data[i][j] = DATA_W'(i * COLS + j + 1);
-            end
-        end
-
-        // Compute golden output: row i shifted right by i, zeros elsewhere.
-        // (Canonical output-stationary skew: row 0 has no delay, row ROWS-1
-        // is delayed by ROWS-1 cycles -- matches skew_buffer_horizontal's
-        // out_data[i][j+i] = in_data[i][j].)
-        for (int i = 0; i < ROWS; i++) begin
-            int shift;
-            shift = i;
-            for (int k = 0; k < OUT_C; k++) begin
-                if (k >= shift && k < shift + COLS)
-                    expected_out[i][k] = in_data[i][k - shift];
-                else
-                    expected_out[i][k] = '0;
-            end
-        end
-
-        @(negedge clk); reset = 1'b1;
         @(negedge clk); reset = 1'b0;
 
-        // One rising edge to latch matrix_tmp from in_data, then settle.
-        @(posedge clk); #1;
+        for (int cyc = 0; cyc < 8; cyc++) begin
+            // Drive new inputs on the negedge so they are stable for the next posedge.
+            in_data[0] = 16'(10 + cyc);
+            in_data[1] = 16'(20 + cyc);
+            in_data[2] = 16'(30 + cyc);
 
-        for (int i = 0; i < ROWS; i++) begin
-            for (int k = 0; k < OUT_C; k++) begin
-                if (out_data[i][k] !== expected_out[i][k]) begin
-                    $display("FAIL row=%0d col=%0d got=%0d exp=%0d",
-                             i, k, out_data[i][k], expected_out[i][k]);
+            @(posedge clk);
+            #1;  // let combinational out_data settle
+
+            for (int lane = 0; lane < ROWS; lane++) begin
+                if (out_data[lane] !== expected_out[cyc][lane]) begin
+                    $display("FAIL cycle=%0d lane=%0d got=%0d exp=%0d",
+                             cyc, lane, out_data[lane], expected_out[cyc][lane]);
                     errors++;
+                end
+                else begin
+                    $display("PASS cycle=%0d lane=%0d got=%0d",
+                             cyc, lane, out_data[lane]);
                 end
             end
         end
 
-        // Zero-input sanity check: the DUT is combinational, so out_data
-        // follows in_data; clear in_data and verify out_data goes to zero.
-        for (int i = 0; i < ROWS; i++)
-            for (int j = 0; j < COLS; j++)
-                in_data[i][j] = '0;
+        // Drain check: stop feeding data and confirm the chain flushes to zero.
+        in_data = '{16'd0, 16'd0, 16'd0};
+        repeat (ROWS) @(posedge clk);
         #1;
-        for (int i = 0; i < ROWS; i++) begin
-            for (int k = 0; k < OUT_C; k++) begin
-                if (out_data[i][k] !== '0) begin
-                    $display("FAIL zero-input row=%0d col=%0d got=%0d exp=0",
-                             i, k, out_data[i][k]);
-                    errors++;
-                end
+        for (int lane = 0; lane < ROWS; lane++) begin
+            if (out_data[lane] !== 16'd0) begin
+                $display("FAIL drain lane=%0d got=%0d exp=0", lane, out_data[lane]);
+                errors++;
             end
         end
 
         if (errors == 0)
-            $display("==== PASS: skew_buffer_horizontal ROWS=%0d COLS=%0d matches expected skew layout ====",
-                     ROWS, COLS);
+            $display("==== PASS: skew_buffer ROWS=%0d matches expected delay pattern ====", ROWS);
         else
-            $display("==== FAIL: %0d skew_buffer_horizontal mismatches ====", errors);
+            $display("==== FAIL: %0d skew_buffer mismatches ====", errors);
 
         $finish;
     end
