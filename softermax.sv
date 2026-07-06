@@ -74,14 +74,12 @@ module softermax(
 //    logic [15:0] o_pow2_full [16];
 //    logic [15:0] o_quot      [16];
 
+   // logic[] counter
+
     assign o_neg_max = max ^ 16'h8000;   // -max, shared across lanes
     assign neg_logit = logits[counter] ^ 16'h8000;//negates logit value
     //        d_i = d_i_minus_1 * np.exp(m_i_minus_1 - m_i) + np.exp(x_i - m_i)
 
-    always_comb begin
-        foreach(logits_out[i])
-            logits_out[i] = output_logit[i] / sum;
-    end
 //    generate
 //        for (genvar gi = 0; gi < 16; gi++) begin : out_lane
 //            // x_i - max (result <= 0; decimal_decomp uses magnitude fields only)
@@ -97,7 +95,18 @@ module softermax(
 //        end
 //    endgenerate
     
+    logic[15:0] normalized_logits[16];
     
+    always_ff @(posedge clk)begin
+        if(Reset)begin
+            for(int i = 0; i < 16; i++)
+                normalized_logits[i] <= 16'd0;
+        end 
+        else
+             normalized_logits[counter] <= pow2_neg_delta_full;
+      end       
+    
+   // normalized_logits <= reset ? 
 
     
    
@@ -114,7 +123,15 @@ module softermax(
 
     assign pow2_neg_delta = {1'b0, 8'd127 - {4'b0, delta_int}, 7'b0};
     assign pow2_neg_delta_1 = {1'b0, 8'd127 - {4'b0, delta_int_1}, 7'b0};
-
+    
+    generate
+        for(genvar a = 0; a < 16; a++)
+            BF16_DIV_UNIT div1(.A(normalized_logits[a]), .B(sum), .C(logits_out[i]));
+    endgenerate
+    
+    always_comb begin
+        for(int i = 0; i < 16; i++) logits_out[i] = normalized_logits[i] / sum;
+    end
 
     fractional_bit_shift u_frac (.delta_frac(delta_frac), .frac_out(frac_out));//new_max
     fractional_bit_shift u_frac_1 (.delta_frac(delta_frac_1), .frac_out(frac_out_1));//~new_max
