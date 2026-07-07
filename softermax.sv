@@ -26,7 +26,8 @@ module softermax(
     input logic clk,
     input logic Reset,
     output logic[15:0] logits_out[15:0],
-    
+    output logic done,                 // high once the 16-element pass completes
+
     output logic[15:0] V_out[16][16]
     );
     
@@ -101,10 +102,10 @@ module softermax(
         if(Reset)begin
             for(int i = 0; i < 16; i++)
                 normalized_logits[i] <= 16'd0;
-        end 
-        else
+        end
+        else if(!done)
              normalized_logits[counter] <= pow2_neg_delta_full;
-      end       
+      end
     
    // normalized_logits <= reset ? 
 
@@ -125,13 +126,10 @@ module softermax(
     assign pow2_neg_delta_1 = {1'b0, 8'd127 - {4'b0, delta_int_1}, 7'b0};
     
     generate
-        for(genvar a = 0; a < 16; a++)
-            BF16_DIV_UNIT div1(.A(normalized_logits[a]), .B(sum), .C(logits_out[i]));
+        for(genvar a = 0; a < 16; a++) begin : div_lane
+            BF16_DIV_Unit div1(.A(normalized_logits[a]), .B(sum), .C(logits_out[a]));
+        end
     endgenerate
-    
-    always_comb begin
-        for(int i = 0; i < 16; i++) logits_out[i] = normalized_logits[i] / sum;
-    end
 
     fractional_bit_shift u_frac (.delta_frac(delta_frac), .frac_out(frac_out));//new_max
     fractional_bit_shift u_frac_1 (.delta_frac(delta_frac_1), .frac_out(frac_out_1));//~new_max
@@ -200,16 +198,21 @@ module softermax(
         if(Reset)
         begin
             max     <= logits[0];
-            
             sum     <= 16'h3F80;
             counter <= 4'd1;
+            done    <= 1'b0;
         end
-        else
+        else if(!done)
         begin
-            counter <= counter + 4'd1;
-            sum     <= new_max ? sum_new_max     : sum_plus_term;
-            max     <= new_max ? logits[counter] : max;
+            // incorporate logits[counter] into the running sum/max
+            sum <= new_max ? sum_new_max     : sum_plus_term;
+            max <= new_max ? logits[counter] : max;
+            if(counter == 4'd15)
+                done <= 1'b1;              // last element processed; freeze state
+            else
+                counter <= counter + 4'd1;
         end
+        // done: hold max, sum, counter (no further accumulation)
     end
 endmodule
 
