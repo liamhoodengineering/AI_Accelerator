@@ -30,6 +30,7 @@ module softermax(
     output logic done,                 // high once the 16-element pass completes
 
     output logic[15:0] V_out[16][16]
+   // output logic softmax_done[15:0]
     );
     
     parameter logic[15:0] ONE_IN_BF16 = 16'h3F80;
@@ -194,8 +195,11 @@ module softermax(
     always_ff @(posedge clk) begin
         if (Reset)
             for (int j = 0; j < 16; j++) o_acc[j] <= V_matrix[0][j];
-        else if (!done)
+               // softmax_done[j] <= 1'b0;
+        else if (!done)begin
             for (int j = 0; j < 16; j++) o_acc[j] <= o_next[j];
+               // softmax_done[j] <= 1'b1;
+            end
         else
             V_out[row_idx] <= o_acc;      // pass complete: place the finished row
     end
@@ -255,17 +259,27 @@ module fractional_bit_shift(//applys horner algorithm for approximating 2^frac
     // Horner evaluation of a minimax fit to 2^(-f) on f in [0,1]:
     //   2^(-f) ~ 1 - 0.6585*f + 0.1565*f^2
     //   (q(0)=1.0, q(1)~0.498, q(0.5)~0.710)
+    //2^(-f) ~ 1- 0.6585*f + 0.2314*f^2 - 0.03*f^3?
+   // 1+ f*(-0.6585 + f*(0.2314 - 0.04*f))
     // ----------------------------------------------------------------
-    logic [15:0] a_zero, a_one, a_two;
+    logic [15:0] a_zero, a_one, a_two, a_three;
     assign a_zero = 16'h3F80;   // +1.0
-    assign a_one  = 16'hBF29;   // -0.6585
-    assign a_two  = 16'h3E20;   // +0.1565
+    assign a_one  = 16'hBF31;   // -0.69140625
+    assign a_two  = 16'h3E6D;   // 0.23144531
+    assign a_three = 16'hBD24; // -0.04003906
+    
+    //-0.69314718056
+    //0.240227
 
-    logic [15:0] temp_1, temp_2, temp_3;
-    BF16_Mult_Unit horner_eq_1 (.A(a_two),  .B(frac_bf16), .C(temp_1));
-    BF16_Add_Unit  horner_eq_2 (.A(temp_1), .B(a_one),     .C(temp_2));
+    logic [15:0] temp_1, temp_2, temp_3, temp_4, temp_5;
+    BF16_Mult_Unit horner_eq_1 (.A(a_three),  .B(frac_bf16), .C(temp_1));
+    BF16_Add_Unit  horner_eq_2 (.A(temp_1), .B(a_two),     .C(temp_2));
     BF16_Mult_Unit horner_eq_3 (.A(temp_2), .B(frac_bf16), .C(temp_3));
-    BF16_Add_Unit  horner_eq_4 (.A(temp_3), .B(a_zero),    .C(frac_out));
+    BF16_Add_Unit  horner_eq_4 (.A(temp_3), .B(a_one),    .C(temp_4));
+    BF16_Mult_Unit  horner_eq_5 (.A(temp_4), .B(frac_bf16),    .C(temp_5));
+    BF16_Add_Unit  horner_eq_6 (.A(temp_5), .B(a_zero),    .C(frac_out));
+
+
     
 
 

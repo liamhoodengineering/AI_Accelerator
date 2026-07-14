@@ -32,13 +32,13 @@ module HBM_to_BRAM(
     input  logic         reset,
     input  logic         HBM_REF_CLK_0,  // 100 MHz HBM PLL reference
     input  logic         APB_0_PCLK,     // 100 MHz APB clock
-  //  output logic [255:0] read_data_out,
+    output logic [255:0] read_data_out,
     output logic [1:0]   read_resp_out,
     output logic         apb_complete_0  // HBM calibration done
 
 );
    
-    logic [255:0] read_data_out;
+   // logic [255:0] read_data_out;
     
     logic S_AXI_00_ARVALID;
     logic[33:0] S_AXI_00_ARADDR;
@@ -193,8 +193,27 @@ module HBM_to_BRAM(
                 .dinb  (read_data_out[bank*64 + 32 +: 32]),
                 .doutb (dout_2[bank])
             );
+            
+            
+//            K_bank K_bank_inst (
+//                .clka  (clk),
+//                .rsta  (reset),
+//                .wea   (wea_q),
+//                .addra (row<<1),
+//                .dina  (input_data[bank*64      +: 32]),
+//                .douta (dout_1[bank]),
+//                .clkb  (clk),
+//                .rstb  (reset),
+//                .web   (web_q),
+//                .addrb ((row<<1)+6'h1),
+//                .dinb  (input_data[bank*64 + 32 +: 32]),
+//                .doutb (dout_2[bank])
+//            );
         end
     endgenerate
+    
+    BRAM_TO_LUTRAM BRAM_TO_Q_LUTRAM(.clk(clk), .dout_1(dout_1), .dout_2(dout_2), .LUTRAM(Q_LUTRAM));
+    BRAM_TO_LUTRAM BRAM_TO_K_LUTRAM(.clk(clk), .dout_1(dout_1), .dout_2(dout_2), .LUTRAM(K_LUTRAM));
 
     // Output logic — safe defaults then per-state overrides
     always_comb begin
@@ -269,38 +288,43 @@ BRAM_parsing BRAM_parsing_inst(
     
 endmodule
 
-module BRAM_parsing(
-    input  logic         clk,
-    input  logic         reset,
-    input  logic [3:0]   wea_q,
-    input  logic [3:0]   web_q,
-    input  logic [5:0]   row,
-    input  logic [255:0] input_data,
-    output logic [31:0]  dout_1 [16][4],   // port A from each bank
-    output logic [31:0]  dout_2 [16][4]    // port B from each bank
-);
+//module BRAM_parsing(
+//    input  logic         clk,
+//    input  logic         reset,
+//    input  logic [3:0]   wea_q,
+//    input  logic [3:0]   web_q,
+//    input  logic [5:0]   row,
+//    input  logic [255:0] input_data,
+//    output logic [31:0]  dout_1 [16][4],   // port A from each bank
+//    output logic [31:0]  dout_2 [16][4]    // port B from each bank
+//);
 
-    genvar bank;
-    generate
-        for (bank = 0; bank < 4; bank++) begin : q_banks
-            Q_bank Q_bank_inst (
-                .clka  (clk),
-                .rsta  (reset),
-                .wea   (wea_q),
-                .addra (row<<1),
-                .dina  (input_data[bank*64      +: 32]),
-                .douta (dout_1[bank]),
-                .clkb  (clk),
-                .rstb  (reset),
-                .web   (web_q),
-                .addrb ((row<<1)+6'h1),
-                .dinb  (input_data[bank*64 + 32 +: 32]),
-                .doutb (dout_2[bank])
-            );
-        end
-    endgenerate
+//    BRAM_TO_LUTRAM BRAM_TO_Q_LUTRAM(.clk(clk), .dout_1(dout_1), .dout_2(dout_2), .LUTRAM(Q_LUTRAM));
+//    BRAM_TO_LUTRAM BRAM_TO_K_LUTRAM(.clk(clk), .dout_1(dout_1), .dout_2(dout_2), .LUTRAM(K_LUTRAM));
 
-endmodule
+
+//    genvar bank;
+//    generate
+//        for (bank = 0; bank < 4; bank++) begin : k_banks
+
+//            Q_bank Q_bank_inst (
+//                .clka  (clk),
+//                .rsta  (reset),
+//                .wea   (wea_q),
+//                .addra (row<<1),
+//                .dina  (input_data[bank*64      +: 32]),
+//                .douta (dout_1[bank]),
+//                .clkb  (clk),
+//                .rstb  (reset),
+//                .web   (web_q),
+//                .addrb ((row<<1)+6'h1),
+//                .dinb  (input_data[bank*64 + 32 +: 32]),
+//                .doutb (dout_2[bank])
+//            );
+//        end
+//    endgenerate
+
+//endmodule
 
 
 module FSM_tile_counter
@@ -422,26 +446,32 @@ begin
             row = 6'd0;
     endcase
 end
+logic[15:0] Q_LUTRAM[16][16];
+logic[15:0] K_LUTRAM[16][16];
+
+
 
 endmodule
 
-module BRAM_TO_LUTRAM #
-(parameter int ROW = 16)
+module BRAM_TO_LUTRAM
 (
     input logic clk,
-    input logic[31:0] Q_bank_dout_1[ROW][4],
-    input logic[31:0] Q_bank_dout_2[ROW][4],
-    output logic[15:0] Q_LUTRAM[ROW][16]
+    input logic[31:0] dout_1[16][4],
+    input logic[31:0] dout_2[16][4],
+    output logic[15:0] LUTRAM[16][16]
 );
  always_ff @(posedge clk)
  begin
-    for(int i = 0; i < ROW; i++)
+    for(int i = 0; i < 16; i++)
     begin
-        for(int j = 0; j < 16; j++)
+        for(int b = 0; b < 4; b++)
         begin
-            {Q_LUTRAM[i][j+1],Q_LUTRAM[i][j]}  <= (j[0] == 0) ? Q_bank_dout_1[i][j] : Q_bank_dout_2[i][j];
+            // bank-major, port A then port B; little-endian (low half -> lower slot)
+            LUTRAM[i][4*b + 0] <= dout_1[i][b][15:0];    // bank b, port A, BF16 low
+            LUTRAM[i][4*b + 1] <= dout_1[i][b][31:16];   // bank b, port A, BF16 high
+            LUTRAM[i][4*b + 2] <= dout_2[i][b][15:0];    // bank b, port B, BF16 low
+            LUTRAM[i][4*b + 3] <= dout_2[i][b][31:16];   // bank b, port B, BF16 high
         end
-        
     end
 end
 endmodule

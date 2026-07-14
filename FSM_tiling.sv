@@ -25,13 +25,17 @@ module FSM_tiling(
     input logic cycle_done,
     input logic computation_done,
     input logic clk,
-    output logic[7:0] addr_q, addr_k, addr_v
+    //input logic[15:0] matrix_a[16][16],
+    output logic[7:0] block_addr_q, block_addr_k, block_addr_v
     
     );
     logic base_addr;
     
     
-     
+//     sub_matrix_A = matrix_A[i:i+4, k:k+4]
+//                sub_matrix_B = matrix_B[k:k+4, j:j+4]
+
+//                result[i:i+4, j:j+4] += np.matmul(sub_matrix_A, sub_matrix_B)
     always_ff @(posedge clk)
     begin
         base_addr <= (reset||computation_done) ? 8'b0 : (cycle_done ? base_addr+8'd1 : base_addr);

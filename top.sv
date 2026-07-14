@@ -152,7 +152,8 @@ module top(
     endgenerate
     
     logic[15:0] logits[16][16];
-    
+    logic[15:0] logits_scaled[16][16];
+
     
     systolic_array_mult systolic_array_mult_inst(
         .reset(Reset),
@@ -164,17 +165,29 @@ module top(
     
     logic[15:0] logits_normalized[16][16];
     
-    genvar softmax;
-    generate
-        for(softmax = 0; softmax < 16; softmax++)
-        begin
+    always_ff @(posedge clk)
+    begin
+    foreach(logits[i,j])
+        logits_scaled[i][j] <= logits[i][j] - 16'h0100;
+    end
+    logic softmax_done;
+    
+//    genvar softmax;
+//    generate
+//        for(softmax = 0; softmax < 16; softmax++)
+//        begin
             softermax normalized_inst(
-                .logits(logits[softmax]),
+//                .logits(logits_scaled[softmax]),
                 .clk(clk),
                 .Reset(Reset),
-                .logits_out(logits_normalized[softmax])
+//                .logits_out(logits_normalized[softmax]),
+                .V_matrix(logits_scaled),
+                .done(softmax_done), 
+                .V_out(logits_normalized)
+               // .row_idx(softmax)
+             
             );
-        end
-    endgenerate
+//        end
+//    endgenerate
 
 endmodule
