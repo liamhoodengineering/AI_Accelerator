@@ -1,73 +1,3 @@
-# import numpy as np
-# import random
-
-# matrix_q = np.zeros((16, 16));
-# matrix_k = np.zeros((16, 16));
-# matrix_v = np.zeros((16, 16));
-# matrix_scores = np.zeros((16, 16));
-# matrix_scores_normalized = np.zeros((16, 16));
-# matrix_scores_scaled = np.zeros((16, 16));
-# matrix_weighted_output = np.zeros((16, 16));
-
-
-
-
-# def softmax_3pass(input_array):
-#     n = len(input_array)
-#     output = np.zeros(n, dtype=float)
-    
-#     # First pass: find max
-#     max_val = input_array[0]
-#     for i in range(1, n):
-#         if input_array[i] > max_val:
-#             max_val = input_array[i]
-    
-#     # Second pass: compute exp(x - max) and sum
-#     sum_val = 0.0
-#     for i in range(n):
-#         output[i] = np.exp(input_array[i] - max_val)
-#         sum_val += output[i]
-    
-#     # Third pass: normalize
-#     for i in range(n):
-#         output[i] /= sum_val
-    
-#     return output   #src: https://medium.com/data-science-collective/online-softmax-to-flash-attention-and-why-it-matters-9d676e7c50a8
-
-
-
-# for i in range(16):
-#     for j in range(16):
-#         x = random.uniform(-10.0, 10.0)
-#         matrix_q[i][j] = x
-
-# for i in range(16):
-#     for j in range(16):
-#         x = random.uniform(-10.0, 10.0)
-#         matrix_k[i][j] = x
-
-# for i in range(16):
-#     for j in range(16):
-#         x = random.uniform(-10.0, 10.0)
-#         matrix_v[i][j] = x
-
-# matrix_k_transposed = np.transpose(matrix_k)
-# matrix_scores = np.matmul(matrix_q, matrix_k_transposed)
-# matrix_scores_scaled = matrix_scores / np.sqrt(16)
-# matrix_scores_normalized = np.apply_along_axis(softmax_3pass, 1, matrix_scores_scaled)
-# matrix_weighted_output = np.matmul(matrix_scores_normalized, matrix_v)  
-
-
-      
-# # print (matrix_q)
-# # print("\n")
-# # print (matrix_k)
-# # print("\n")
-# # print (matrix_scores)
-# # print("\n")
-# # print (matrix_v)
-
-
 #src: https://medium.com/@saraswatp/understanding-scaled-dot-product-attention-in-transformer-models-5fe02b0f150c
 import numpy as np
 import torch
@@ -75,84 +5,208 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 
-# Define word embeddings
-# embeddings = {
-#     # 'the': np.array([0.1, 0.2, 0.3]),
-#     # 'cat': np.array([0.4, 0.5, 0.6]),
-#     # 'sat': np.array([0.7, 0.8, 0.9]),
-#     # 'on': np.array([1.0, 1.1, 1.2]),
-#     # 'mat': np.array([1.3, 1.4, 1.5])
-# }
-
-# Define input sentence
-# sentence = ['the', 'cat', 'sat', 'on', 'the', 'mat']
-
-# # Convert sentence to embeddings
-# embedded_tokens = np.array([embeddings[word] for word in sentence])
-
 # Self-attention function using PyTorch
-def scaled_dot_product_attention(q, k, v):
-    # QK^T
-    matmul_qk = torch.matmul(q, (k))
 
-    # dk = embedding dimension
-   # dk = k.shape[-1]
+# def softmax_online(input_array):
+#     n = len(input_array)
+#     output = np.zeros(n, dtype=float)
+    
+#     # Initialize running maximum with first element
+#     m = input_array[0]
+#     # Running sum (starts with e^(x_0 - m_0) = 1.0)
+#     d = 1.0
+    
+#     # Pre-pass to compute final max and total sum
+#     for i in range(1, n):
+#         if input_array[i] > m:
+#             # Adjust the sum when we find a new maximum
+#             d = d * 2**(m - input_array[i]) + 1.0
+#             m = input_array[i]
+#         else:
+#             # Add the contribution of this element to the sum
+#             d += 2**(input_array[i] - m)
+    
+#     # Final pass to compute softmax outputs
+#     for i in range(n):
+#         output[i] = 2**(input_array[i] - m) / d
+    
+#     return output
 
-    # Scale by sqrt(dk)
-    scaled_attention_logits = matmul_qk / 4
+# def scaled_dot_product_attention(q, k, v):
+#     # QK^T
+#     matmul_qk = torch.matmul(q, (k))
 
-    # Optional mask
-    # if mask is not None:
-    #     scaled_attention_logits += mask * -1e9
+#     scaled_attention_logits = matmul_qk / 4
 
-    # Softmax over last dimension
-    attention_weights = torch.softmax(scaled_attention_logits, dim=-1)
+#     # Softmax over last dimension
+#     attention_weights = torch.softmax(scaled_attention_logits, dim=-1)
 
-    # Multiply by V
-    output = torch.matmul(attention_weights, v)
+#     # Multiply by V
+#     output = torch.matmul(attention_weights, v)
 
-    return output, attention_weights
+#     return output, attention_weights
+
+# def flash_attention(Q, K, V, k, max, sum):
+#     """   
+#     Parameters:
+#     Q: Query matrix
+#     K: Key matrix (transposed in the computation)
+#     V: Value matrix
+#     k: Row index for query
+    
+#     Returns:
+#     Output vector O[k,:] after processing - equivalent to softmax(Q[k,:] @ K) @ V
+#     """
+#     N = K.shape[1]  # Get the dimension from K matrix
+    
+#     # Initialize variables
+#     m_i_minus_1 = float('-inf')  # Initial value for m_{i-1}
+#     d_i_minus_1 = 0.0  # Initial value for d'_{i-1}
+#     o_i_minus_1 = np.zeros_like(V[0, :])  # Initial value for o'_{i-1}
+    
+#     for i in range(N):
+#         # Calculate x_i using the k-th row of Q and i-th column of K^T
+#         x_i = np.dot(Q[k, :], K[:, i])
+        
+#         # Update max value
+#         m_i = max(m_i_minus_1, x_i)
+        
+#         # Calculate d'_i
+#         d_i = d_i_minus_1 * np.exp(m_i_minus_1 - m_i) + np.exp(x_i - m_i)
+            
+#         # Calculate o'_i
+#         o_i = (o_i_minus_1 * d_i_minus_1 * np.exp(m_i_minus_1 - m_i) / d_i) + (np.exp(x_i - m_i) / d_i) * V[i, :]
+        
+#         # Update previous values for next iteration
+#         m_i_minus_1 = m_i
+#         d_i_minus_1 = d_i
+#         o_i_minus_1 = o_i
+    
+#     # The result is o'_N
+#     return o_i_minus_1#src: https://medium.com/data-science-collective/online-softmax-to-flash-attention-and-why-it-matters-9d676e7c50a8
 
 # Q = K = V for self-attention
 #Q = K = V = torch.tensor(embedded_tokens, dtype=torch.float32)
-matrix_q, matrix_k, matrix_v = torch.zeros((16, 16)), torch.zeros((16, 16)), torch.zeros((16, 16))
-for i in range(16):
-    for j in range(16):
-        x = random.uniform(-10.0, 10.0)
-        matrix_q[i][j] = x
+# matrix_q, matrix_k, matrix_v = torch.zeros((8192, 4096)), torch.zeros((8192, 4096)), torch.zeros((8192, 4096))
+import torch
 
-for i in range(16):
-    for j in range(16):
-        x = random.uniform(-10.0, 10.0)
-        matrix_k[i][j] = x
+# -----------------------------
+# Configuration
+# -----------------------------
+N = 256
+D = 128
+TILE = 16
+SCALE = D**.05
 
-for i in range(16):
-    for j in range(16):
-        x = random.uniform(-10.0, 10.0)
-        matrix_v[i][j] = x
+torch.manual_seed(0)
 
-# Apply self-attention
-output, attention_weights = scaled_dot_product_attention(matrix_q, torch.transpose(matrix_k,0,1), matrix_v)
+# -----------------------------
+# Input matrices
+# -----------------------------
+matrix_q = torch.empty((N, D)).uniform_(-1.0, 1.0)
+matrix_k = torch.empty((N, D)).uniform_(-1.0, 1.0)
+matrix_v = torch.empty((N, D)).uniform_(-1.0, 1.0)
 
-# Print attention weights
-print("Attention Weights:")
-print(attention_weights.numpy())
+# This represents external output memory.
+# We will only read/write it in 16x16 tiles.
+matrix_output = torch.zeros((N, D))
 
-# Print output
-print("Output:")
-print(output.numpy())
+# Optional debug storage for QK^T
+matrix_QT = torch.zeros((N, N))
 
-# Visualize attention weights
-#tokens = sentence
-# plt.figure(figsize=(10, 8))
-# sns.heatmap(
-#     attention_weights.numpy(),
-#     xticklabels=tokens,
-#     yticklabels=tokens,
-#     cmap='viridis',
-#     annot=True
-# )
-# plt.xlabel('Input Tokens')
-# plt.ylabel('Attention given to Tokens')
-# plt.title('Attention Weights Heatmap')
-# plt.show()
+# -----------------------------
+# One-pass online tiled attention
+# -----------------------------
+for i in range(0, N, TILE):
+
+    # One max and denominator per query row in this 16-row tile
+    row_max = torch.full((TILE,), -float("inf"))
+    row_sum = torch.zeros((TILE,))
+
+    for j in range(0, N, TILE):
+
+        # -----------------------------
+        # Compute one 16x16 score tile:
+        # Q[i:i+16, :] @ K[j:j+16, :].T
+        # But using only 16x16 Q/K tiles.
+        # -----------------------------
+        score_acc = torch.zeros((TILE, TILE))
+
+        for k in range(0, D, TILE):
+            q_tile = matrix_q[i:i+TILE, k:k+TILE]
+            k_tile = matrix_k[j:j+TILE, k:k+TILE]
+
+            score_acc += q_tile @ k_tile.T
+
+        matrix_QT[i:i+TILE, j:j+TILE] = score_acc
+
+        score_tile = score_acc / 4
+
+        # -----------------------------
+        # Online softmax statistics update
+        # -----------------------------
+        old_max = row_max.clone()
+        old_sum = row_sum.clone()
+
+        tile_max = torch.max(score_tile, dim=1).values
+        new_max = torch.maximum(old_max, tile_max)
+
+        old_sum_scaled = old_sum * torch.exp(old_max - new_max)
+        exp_scores = torch.exp(score_tile - new_max[:, None])
+
+        new_sum = old_sum_scaled + torch.sum(exp_scores, dim=1)
+
+        # -----------------------------
+        # Update output in 16x16 output-column tiles
+        # -----------------------------
+        for l in range(0, D, TILE):
+
+            # Load old O tile from external memory
+            old_output_tile = matrix_output[i:i+TILE, l:l+TILE]
+
+            # Load only one 16x16 V tile
+            v_tile = matrix_v[j:j+TILE, l:l+TILE]
+
+            # Old normalized output needs to be converted back
+            # into a numerator under the new max.
+            old_output_contribution = old_output_tile * old_sum_scaled[:, None]
+
+            # New contribution from the current score tile and V tile
+            new_output_contribution = exp_scores @ v_tile
+
+            # Normalize by updated denominator
+            new_output_tile = (
+                old_output_contribution + new_output_contribution
+            ) / new_sum[:, None]
+
+            # Store updated O tile back to external memory
+            matrix_output[i:i+TILE, l:l+TILE] = new_output_tile
+
+        # Commit online softmax stats after all output-column tiles are updated
+        row_max = new_max
+        row_sum = new_sum
+
+
+# -----------------------------
+# Gold/reference calculation
+# -----------------------------
+matrix_QT_gold = matrix_q @ matrix_k.T
+matrix_QT_gold_scaled = matrix_QT_gold / D**0.5
+matrix_QT_gold_softmax = torch.softmax(matrix_QT_gold_scaled, dim=-1)
+matrix_output_gold = matrix_QT_gold_softmax @ matrix_v
+
+# -----------------------------
+# Verification
+# -----------------------------
+qt_diff = torch.abs(matrix_QT - matrix_QT_gold)
+output_diff = torch.abs(matrix_output - matrix_output_gold)
+
+print("QK^T allclose:", torch.allclose(matrix_QT, matrix_QT_gold, atol=1e-4, rtol=1e-4))
+print("QK^T max absolute difference:", torch.max(qt_diff).item())
+print("QK^T mean absolute difference:", torch.mean(qt_diff).item())
+
+print()
+
+print("Output allclose:", torch.allclose(matrix_output, matrix_output_gold, atol=1e-4, rtol=1e-4))
+print("Output max absolute difference:", torch.max(output_diff).item())
+print("Output mean absolute difference:", torch.mean(output_diff).item())
