@@ -46,11 +46,13 @@ module systolic_array_mult#(
     parameter int ROWS = 16,
     parameter int COLS = 16
     )(
+    input logic start,
     input logic reset,
     input logic clk,
     input logic[15:0] array_A[ROWS-1:0][COLS-1:0],
     input logic[15:0] array_B[ROWS-1:0][COLS-1:0],
-    output logic[15:0] c_matrix[ROWS-1:0][COLS-1:0]
+    output logic[15:0] c_matrix[ROWS-1:0][COLS-1:0],
+    output logic done_out
     );
    
     localparam int SKEW_W = ROWS + COLS - 1;   // 31 for 16x16
