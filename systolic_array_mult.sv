@@ -49,9 +49,9 @@ module systolic_array_mult#(
     input logic start,
     input logic reset,
     input logic clk,
-    input logic[15:0] array_A[ROWS-1:0][COLS-1:0],
-    input logic[15:0] array_B[ROWS-1:0][COLS-1:0],
-    output logic[15:0] c_matrix[ROWS-1:0][COLS-1:0],
+    input logic[15:0] array_A[ROWS][COLS],
+    input logic[15:0] array_B[ROWS][COLS],
+    output logic[15:0] c_matrix[ROWS][COLS],
     output logic done_out
     );
    

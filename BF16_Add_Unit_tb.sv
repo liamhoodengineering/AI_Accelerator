@@ -65,6 +65,35 @@ module BF16_Add_Unit_tb(
         // Swap order: B is bigger
         check(16'h3F80, 16'h4040, 16'h4080, "1 + 3 = 4 (B bigger)");
 
+        // -------------------- Additional 15 cases --------------------
+
+        // Same-sign, equal-exponent adds with carry-out
+        check(16'h4020, 16'h4020, 16'h40A0, "2.5 + 2.5 = 5");
+        check(16'h3F00, 16'h3F00, 16'h3F80, "0.5 + 0.5 = 1");
+        check(16'h3E80, 16'h3E80, 16'h3F00, "0.25 + 0.25 = 0.5");
+        check(16'h4040, 16'h4040, 16'h40C0, "3 + 3 = 6");
+
+        // Same-sign, differing exponents (align + shift)
+        check(16'h3F80, 16'h3F00, 16'h3FC0, "1 + 0.5 = 1.5");
+        check(16'h4120, 16'h40C0, 16'h4180, "10 + 6 = 16");
+        check(16'h4060, 16'h4090, 16'h4100, "3.5 + 4.5 = 8");
+        check(16'h3FE0, 16'h3FC0, 16'h4050, "1.75 + 1.5 = 3.25");
+
+        // Same-sign, large magnitudes
+        check(16'h4100, 16'h4100, 16'h4180, "8 + 8 = 16");
+        check(16'h42C8, 16'h42C8, 16'h4348, "100 + 100 = 200");
+
+        // Opposite signs — subtraction path
+        check(16'h4000, 16'hBF80, 16'h3F80, "2 + (-1) = 1");
+        check(16'hC0A0, 16'h4040, 16'hC000, "-5 + 3 = -2");
+        check(16'h3F80, 16'hBF00, 16'h3F00, "1 + (-0.5) = 0.5");
+
+        // Opposite signs, exact cancellation (A < B)
+        check(16'hBF80, 16'h3F80, 16'h0000, "-1 + 1 = 0");
+
+        // Opposite signs, unequal magnitudes, negative result (large mantissa)
+        check(16'hC2C8, 16'h4248, 16'hC248, "-100 + 50 = -50");
+
         if (errors == 0)
             $display("==== PASS: BF16_Add_Unit all cases matched ====");
         else
