@@ -19,6 +19,7 @@
 //////////////////////////////////////////////////////////////////////////////////
 
 module FSM_tiling #(
+    
     parameter int ROWS = 512,   // row-blocks (query i, key j)
     parameter int COLS = 256,   // contraction blocks (k) for QK^T
     parameter int SCALE_SHIFT = 2, // logit scale = 1/2^SCALE_SHIFT (=/4 for D=16)
@@ -244,6 +245,17 @@ module FSM_tiling #(
         .clk(clk), .reset(reset), .start(acc_start), .first(k == 17'd0),
         .array_in(temp_logit_tile_lut), .array_out(logit_tile_lut), .done(logit_acc_done));
 
+    logic[15:0] scaling_factor;
+    logic sqrt_done;
+    square_root #(
+        .dimension(COLS)
+    ) sqrt_unit
+    (
+        .clk(clk),
+        .dim_sqrt(scaling_factor),
+        .done(sqrt_done)
+    );
+
     assign logit_tile_out = logit_tile_lut;
     assign tile_valid     = tile_complete;
 
@@ -254,21 +266,40 @@ module FSM_tiling #(
     // Scale the logit tile by 1/2^SCALE_SHIFT via BF16 exponent subtraction
     // (exact for the /4 power-of-two case; underflow -> signed zero).
     logic [15:0] scaled_logit [16][16];
-    always_comb begin
-        for (int r = 0; r < 16; r++)
-            for (int c = 0; c < 16; c++) begin
-                logic [7:0] e;
-                e = logit_tile_lut[r][c][14:7];
-                if (logit_tile_lut[r][c][14:0] == 15'd0)
-                    scaled_logit[r][c] = logit_tile_lut[r][c];                 // +/-0
-                else if (e <= SCALE_SHIFT[7:0])
-                    scaled_logit[r][c] = {logit_tile_lut[r][c][15], 15'd0};    // underflow -> 0
-                else
-                    scaled_logit[r][c] = {logit_tile_lut[r][c][15],
-                                          e - SCALE_SHIFT[7:0],
-                                          logit_tile_lut[r][c][6:0]};
-            end
-    end
+    logic[15:0] scaling_factor;
+    square_root #(
+        .dimension(COLS)
+    ) sqrt_scaling_unit
+    (
+        .clk(clk),
+        .dim_sqrt(scaling_factor),
+        .done()
+    );
+    genvar gen_i,gen_j;
+    generate
+        
+        for( gen_i = 0; gen_i < 16; gen_i++)begin 
+            for( gen_j = 0; gen_j < 16; gen_j++) begin
+                BF16_DIV_Unit scaling_div (.A(logit[gen_i][gen_j]), .B(scaling_factor), .C(scaled_logit[gen_i][gen_j]));
+            end 
+        end
+
+    endgenerate
+//    always_comb begin
+//        for (int r = 0; r < 16; r++)
+//            for (int c = 0; c < 16; c++) begin
+//                logic [7:0] e;
+//                e = logit_tile_lut[r][c][14:7];
+//                if (logit_tile_lut[r][c][14:0] == 15'd0)
+//                    scaled_logit[r][c] = logit_tile_lut[r][c];                 // +/-0
+//                else if (e <= SCALE_SHIFT[7:0])
+//                    scaled_logit[r][c] = {logit_tile_lut[r][c][15], 15'd0};    // underflow -> 0
+//                else
+//                    scaled_logit[r][c] = {logit_tile_lut[r][c][15],
+//                                          e - SCALE_SHIFT[7:0],
+//                                          logit_tile_lut[r][c][6:0]};
+//            end
+//    end
 
     // Running flash state per query row (carried across j, reset per query block i).
     logic [15:0] m [16];        // running max
@@ -289,7 +320,7 @@ module FSM_tiling #(
     assign sm_capture = sm_done && !sm_done_d1;   // rising edge = pass complete
 
     softermax softermax_inst (
-        .logits(sm_logits), .V_matrix(v_tile_lut), .clk(clk), .Reset(reset),
+        .scaling_factor(scaling_factor), .logits(sm_logits), .V_matrix(v_tile_lut), .clk(clk), .Reset(reset),
         .row_idx(sm_row),
         .start(sm_start), .m_in(m[sm_row]), .d_in(d[sm_row]), .o_in(o[sm_row]),
         .m_out(sm_m_out), .d_out(sm_d_out), .o_out(sm_o_out),
@@ -331,6 +362,9 @@ module FSM_tiling #(
 
     assign out_tile  = o;
     assign out_valid = softv_done && (j == 17'(ROWS - 1));
+    
+    
+    
 
 endmodule
 
@@ -361,4 +395,6 @@ module accumulate_tile_output
         else
             done <= 1'b0;
     end
+    
+    
 endmodule
