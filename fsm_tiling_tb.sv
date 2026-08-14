@@ -32,17 +32,18 @@ module fsm_tiling_tb;
     localparam int COLS_TB    = 8;    // D=128 / 16
     localparam bit CHECK_DATA = 1'b1;
 `endif
-    // Flash OUTPUT check: OFF until the RTL has the feature l-loop + 1/sqrt(128)
-    // scale (D=128 output = 128 features, but the DUT only produces 16). Logit
-    // (QK^T) is checked; output is not.
-    localparam bit CHECK_OUT = 1'b0;
+    // Flash OUTPUT check: compares out_tile (16 query rows x 16 features = V feature
+    // block 0) against gold_vout.mem. The DUT is un-scaled (square_root=1, softermax
+    // scaling_factor unused), so the gold must be un-scaled softmax(Q@K^T) @ V[:,0:16].
+    localparam bit CHECK_OUT = 1'b1;
 
     localparam string DIR       = "C:/Users/egypt/AI_Accelerator/python_verification/";
     localparam string Q_FILE    = {DIR, "q_hbm.mem"};
     localparam string K_FILE    = {DIR, "k_hbm.mem"};
     localparam string V_FILE    = {DIR, "v_hbm.mem"};
-    localparam string GOLD_FILE = {DIR, "logit_gold.mem"};
-    localparam string OUT_FILE  = {DIR, "out_gold.mem"};
+    localparam string GOLD_FILE   = {DIR, "logit_gold.mem"};
+    localparam string SCORES_FILE = {DIR, "scores_gold.mem"};
+    localparam string OUT_FILE    = {DIR, "gold_vout.mem"};
 
     // Logit tolerance: BF16 systolic MAC (DUT) vs float32 reference. At D=128 the
     // logits are ~±15 and accumulate over 8 BF16 tiles, so the abs floor is larger.
@@ -84,14 +85,16 @@ module fsm_tiling_tb;
     );
 
     // ---- Gold + scoreboard --------------------------------------------------
-    logic [15:0] gold_mem [0:ROWS_TB*ROWS_TB*256-1];   // 256 = 16x16 words per logit tile
-    logic [15:0] out_gold [0:ROWS_TB*16*128-1];        // flash output (unused: CHECK_OUT=0)
-    int sched_pass, sched_fail;
-    int addr_pass,  addr_fail;
-    int data_pass,  data_fail;
-    int out_pass,   out_fail;
+    logic [15:0] gold_mem   [0:ROWS_TB*ROWS_TB*256-1]; // 256 = 16x16 words per logit tile
+    logic [15:0] scores_mem [0:ROWS_TB*ROWS_TB*256-1]; // full-matmul QK^T gold (scores_bf)
+    logic [15:0] out_gold [0:ROWS_TB*16*16-1];         // flash output: 16 rows x 16 feats per block
+    int sched_pass,  sched_fail;
+    int addr_pass,   addr_fail;
+    int data_pass,   data_fail;
+    int scores_pass, scores_fail;
+    int out_pass,    out_fail;
     int tiles_seen, out_blks;
-    real max_abs_diff, max_out_err;
+    real max_abs_diff, max_scores_diff, max_out_err;
 
     // Expected tile schedule (independent reconstruction of the nested counters).
     int ei, ej, ek;
@@ -136,6 +139,10 @@ module fsm_tiling_tb;
                         automatic real g_r = bf16_to_real(gold_mem[base + r*16 + c]);
                         automatic real d   = (a_r > g_r) ? (a_r - g_r) : (g_r - a_r);
                         automatic real tol = ATOL + RTOL * ((g_r < 0) ? -g_r : g_r);
+                        // Second, independent gold: scores_bf (single full-precision matmul).
+                        automatic real s_r  = bf16_to_real(scores_mem[base + r*16 + c]);
+                        automatic real sd   = (a_r > s_r) ? (a_r - s_r) : (s_r - a_r);
+                        automatic real stol = ATOL + RTOL * ((s_r < 0) ? -s_r : s_r);
                         if (d > max_abs_diff) max_abs_diff = d;
                         if (d <= tol) data_pass++;
                         else begin
@@ -143,6 +150,14 @@ module fsm_tiling_tb;
                             if (data_fail <= 20)
                                 $error("[%0t] DATA (i,j,r,c)=(%0d,%0d,%0d,%0d) got=%f gold=%f d=%f",
                                        $time, ei, ej, r, c, a_r, g_r, d);
+                        end
+                        if (sd > max_scores_diff) max_scores_diff = sd;
+                        if (sd <= stol) scores_pass++;
+                        else begin
+                            scores_fail++;
+                            if (scores_fail <= 20)
+                                $error("[%0t] SCORES (i,j,r,c)=(%0d,%0d,%0d,%0d) got=%f gold=%f d=%f",
+                                       $time, ei, ej, r, c, a_r, s_r, sd);
                         end
                     end
             end
@@ -161,11 +176,12 @@ module fsm_tiling_tb;
     end
 
     // ---- Flash-attention output check (one out_tile per query block i) ------
-    // OFF at D=128 (CHECK_OUT=0): the DUT emits 16 of the 128 features and scales
-    // by /4 not /sqrt(128) -- re-enable once the RTL l-loop + scale land.
+    // out_tile = 16 query rows x 16 features (V feature block 0). gold_vout.mem is
+    // row-major over global query rows, 16 features each -> block out_blks(=i) row r
+    // feature c maps to gold row (16*out_blks + r) -> index out_blks*16*16 + r*16 + c.
     always @(posedge clk) begin
         if (!reset && CHECK_OUT && out_valid) begin
-            automatic int obase = out_blks * 16 * 128; // block r has 128 features (D=128)
+            automatic int obase = out_blks * 16 * 16;  // 16 features per query row
             for (int r = 0; r < 16; r++)
                 for (int c = 0; c < 16; c++) begin
                     automatic real a_r = bf16_to_real(out_tile[r][c]);
@@ -187,14 +203,17 @@ module fsm_tiling_tb;
 
     // ---- Main ---------------------------------------------------------------
     initial begin
-        sched_pass=0; sched_fail=0; addr_pass=0; addr_fail=0;
-        data_pass=0;  data_fail=0;  tiles_seen=0; max_abs_diff=0.0;
-        out_pass=0;   out_fail=0;   out_blks=0;   max_out_err=0.0;
+        sched_pass=0;  sched_fail=0; addr_pass=0; addr_fail=0;
+        data_pass=0;   data_fail=0;  tiles_seen=0; max_abs_diff=0.0;
+        scores_pass=0; scores_fail=0; max_scores_diff=0.0;
+        out_pass=0;    out_fail=0;   out_blks=0;   max_out_err=0.0;
         ei=0; ej=0; ek=0;
 
-        if (CHECK_DATA)  $readmemh(GOLD_FILE, gold_mem);
-        if (CHECK_OUT)   $readmemh(OUT_FILE,  out_gold);
-        if (CHECK_DATA)  $display("[%0t] loaded logit gold: gold[0]=%04h", $time, gold_mem[0]);
+        if (CHECK_DATA)  $readmemh(GOLD_FILE,   gold_mem);
+        if (CHECK_DATA)  $readmemh(SCORES_FILE, scores_mem);
+        if (CHECK_OUT)   $readmemh(OUT_FILE,    out_gold);
+        if (CHECK_DATA)  $display("[%0t] loaded logit gold: gold[0]=%04h scores[0]=%04h",
+                                  $time, gold_mem[0], scores_mem[0]);
 
         repeat (4) @(posedge clk);
         reset <= 1'b0;
@@ -213,18 +232,21 @@ module fsm_tiling_tb;
                  ROWS_TB, COLS_TB, COLS_TB*16);
         $display("Schedule : PASS %0d  FAIL %0d", sched_pass, sched_fail);
         $display("Addresses: PASS %0d  FAIL %0d", addr_pass, addr_fail);
-        if (CHECK_DATA)
+        if (CHECK_DATA) begin
             $display("Logit data : PASS %0d  FAIL %0d  (max |diff| = %f)",
                      data_pass, data_fail, max_abs_diff);
-        else
+            $display("Scores data: PASS %0d  FAIL %0d  (max |diff| = %f)",
+                     scores_pass, scores_fail, max_scores_diff);
+        end else
             $display("Logit data : SKIPPED (schedule/address scaling run)");
         if (CHECK_OUT)
             $display("Output data: PASS %0d  FAIL %0d  (max |diff| = %f)",
                      out_pass, out_fail, max_out_err);
         else
-            $display("Output data: SKIPPED (needs RTL feature l-loop + 1/sqrt(D) scale)");
+            $display("Output data: SKIPPED (CHECK_OUT=0)");
 
         if (sched_fail==0 && addr_fail==0 && (!CHECK_DATA || data_fail==0)
+                                          && (!CHECK_DATA || scores_fail==0)
                                           && (!CHECK_OUT  || out_fail==0))
             $display("RESULT: PASS");
         else

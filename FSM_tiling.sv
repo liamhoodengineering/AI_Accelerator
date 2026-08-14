@@ -232,6 +232,7 @@ module FSM_tiling #(
     // =========================================================================
     logic [15:0] temp_logit_tile_lut [16][16];
     logic [15:0] logit_tile_lut [16][16];
+    
 
     systolic_array_mult #(.ROWS(16), .COLS(16)) logit_mult (
         .reset(reset), .clk(clk), .start(systolic_mult_start),
@@ -245,16 +246,12 @@ module FSM_tiling #(
         .clk(clk), .reset(reset), .start(acc_start), .first(k == 17'd0),
         .array_in(temp_logit_tile_lut), .array_out(logit_tile_lut), .done(logit_acc_done));
 
-    logic[15:0] scaling_factor;
-    logic sqrt_done;
-    square_root #(
-        .dimension(COLS)
-    ) sqrt_unit
-    (
-        .clk(clk),
-        .dim_sqrt(scaling_factor),
-        .done(sqrt_done)
-    );
+    // Scaling factor source (unused in the logit-only run; restore with the
+    // scaled_logit block below once square_root.sv is in the build).
+    // logic[15:0] scaling_factor;
+    // logic sqrt_done;
+    // square_root #(.dimension(COLS)) sqrt_unit
+    //     (.clk(clk), .dim_sqrt(scaling_factor), .done(sqrt_done));
 
     assign logit_tile_out = logit_tile_lut;
     assign tile_valid     = tile_complete;
@@ -266,25 +263,22 @@ module FSM_tiling #(
     // Scale the logit tile by 1/2^SCALE_SHIFT via BF16 exponent subtraction
     // (exact for the /4 power-of-two case; underflow -> signed zero).
     logic [15:0] scaled_logit [16][16];
+    // Logit-only test: bypass the 1/sqrt(D) scale (softmax/output path not checked
+    // in this run). Restore the square_root + BF16_DIV_Unit scaling below once
+    // square_root.sv exists in the build. (Also fixes logit -> logit_tile_lut.)
+    // logic[15:0] scaling_factor;
+    // square_root #(.dimension(COLS)) sqrt_scaling_unit
+    //     (.clk(clk), .dim_sqrt(scaling_factor), .done());
+     genvar gen_i, gen_j;
+     generate
+         for (gen_i = 0; gen_i < 16; gen_i++) begin
+             for (gen_j = 0; gen_j < 16; gen_j++) begin
+                 BF16_DIV_Unit scaling_div (.A(logit_tile_lut[gen_i][gen_j]),
+                     .B(scaling_factor), .C(scaled_logit[gen_i][gen_j]));
+             end
+         end
+     endgenerate
     logic[15:0] scaling_factor;
-    square_root #(
-        .dimension(COLS)
-    ) sqrt_scaling_unit
-    (
-        .clk(clk),
-        .dim_sqrt(scaling_factor),
-        .done()
-    );
-    genvar gen_i,gen_j;
-    generate
-        
-        for( gen_i = 0; gen_i < 16; gen_i++)begin 
-            for( gen_j = 0; gen_j < 16; gen_j++) begin
-                BF16_DIV_Unit scaling_div (.A(logit[gen_i][gen_j]), .B(scaling_factor), .C(scaled_logit[gen_i][gen_j]));
-            end 
-        end
-
-    endgenerate
 //    always_comb begin
 //        for (int r = 0; r < 16; r++)
 //            for (int c = 0; c < 16; c++) begin
@@ -305,12 +299,17 @@ module FSM_tiling #(
     logic [15:0] m [16];        // running max
     logic [15:0] d [16];        // running sum
     logic [15:0] o [16][16];    // running output
+    logic sm_start_sqrt_gated;
+    logic sqrt_done;
+    
 
     // softermax I/O (one row per pass).
     logic [3:0]  sm_row;
     logic        sm_start, sm_done, sm_done_d1;
     logic [15:0] sm_m_out, sm_d_out, sm_o_out [16];
     logic [15:0] sm_logits [15:0];      // matches softermax's descending logits port
+
+    assign sm_start_sqrt_gated = sm_start && sqrt_done;
 
     always_comb
         for (int c = 0; c < 16; c++)
@@ -320,11 +319,19 @@ module FSM_tiling #(
     assign sm_capture = sm_done && !sm_done_d1;   // rising edge = pass complete
 
     softermax softermax_inst (
-        .scaling_factor(scaling_factor), .logits(sm_logits), .V_matrix(v_tile_lut), .clk(clk), .Reset(reset),
-        .row_idx(sm_row),
-        .start(sm_start), .m_in(m[sm_row]), .d_in(d[sm_row]), .o_in(o[sm_row]),
+        .logits(sm_logits), .V_matrix(v_tile_lut), .clk(clk), .Reset(reset),
+        .row_idx(sm_row), .scaling_factor(scaling_factor),
+        .start(sm_start_sqrt_gated), .m_in(m[sm_row]), .d_in(d[sm_row]), .o_in(o[sm_row]),
         .m_out(sm_m_out), .d_out(sm_d_out), .o_out(sm_o_out),
         .logits_out(), .done(sm_done), .V_out()
+    );
+    
+    square_root #(.dimension(COLS))
+    sqrt_scale_inst
+    (
+        .clk(clk),
+        .dim_sqrt(scaling_factor),
+        .done(sqrt_done)
     );
 
     // Row sequencer: pulse start per row, capture on done, advance until row 15.
@@ -382,6 +389,8 @@ module accumulate_tile_output
     output logic [15:0] array_out [16][16],
     output logic        done
 );
+    logic[15:0] temp_array[16][16];
+    
     always_ff @(posedge clk) begin
         if (reset)
             done <= 1'b0;
@@ -389,12 +398,19 @@ module accumulate_tile_output
             for (int r = 0; r < 16; r++)
                 for (int c = 0; c < 16; c++)
                     array_out[r][c] <= first ? array_in[r][c]
-                                             : (array_out[r][c] + array_in[r][c]);
+                                             : temp_array[r][c];
             done <= 1'b1;
         end
         else
             done <= 1'b0;
     end
+    
+    generate 
+        for (genvar r = 0; r < 16; r++)
+                for (genvar c = 0; c < 16; c++)
+                    BF16_Add_Unit acc_adder_unit(.A(array_in[r][c]), .B(array_out[r][c]), .C(temp_array[r][c]));
+    endgenerate 
+                   
     
     
 endmodule
