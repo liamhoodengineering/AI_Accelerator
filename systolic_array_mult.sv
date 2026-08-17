@@ -68,7 +68,7 @@ module systolic_array_mult#(
     // column of array_A_out / row of array_B_out that feeds the grid edge.
     logic [5:0] col_ptr;
     always_ff @(posedge clk) begin
-        if (reset)                       col_ptr <= '0;
+        if (reset||start)                       col_ptr <= '0;
         else if (col_ptr < (SKEW_W - 1)) col_ptr <= col_ptr + 6'd1;
     end
    
@@ -97,35 +97,11 @@ module systolic_array_mult#(
 //     );
    
      counter counter_inst(
-        .reset(reset), 
+        .reset(reset || start),
         .clk(clk),
-        .done(done)
+        .done(done_out)
 );
-//    always_ff @(posedge clk)
-//    begin
-//        if(reset)begin
-//            foreach(array_A[i,j])
-//            begin
-//                array_A[i][j] <= 16'hFFFF;
-//                array_B[i][j] <= 16'hFFFF;
-//            end
-//           // done <= 1'b0;
-//        end
-//        else
-//        begin
-////            array_A[0] <= {0,array_A[0][0:3]};
-////            array_A[1] <= {0,array_A[1][0:3]};
-////            array_A[2] <= {0,array_A[2][0:3]};
-            
-////            array_B[4] <= array_B[3];
-////            array_B[3] <= array_B[2];
-////            array_B[2] <= array_B[1];
-////            array_B[1] <= array_B[0];
-////            array_B[0] <= '{0,0,0};
-////            foreach(array_A_out[i,j])
-////                array_A_out[i][j] <= 16'b0;
-//        end
-//    end
+
 
     logic[15:0] a_grid   [ROWS][COLS];
     logic[15:0] b_grid   [ROWS][COLS];
@@ -136,7 +112,8 @@ module systolic_array_mult#(
 
     always_ff @(posedge clk)
     begin
-        if(reset) begin
+        if(reset || start) begin
+           
             for(int i = 0; i < ROWS; i++) begin
                 for(int j = 0; j < COLS; j++) begin
                     a_grid[i][j]   <= 16'b0;
@@ -147,7 +124,7 @@ module systolic_array_mult#(
         end
         else
         begin
-            if(done)
+            if(done_out)
                 c_matrix <= acc_grid;
             else
             begin
@@ -182,7 +159,7 @@ module systolic_array_mult#(
                     .A(a_grid[i][j]),
                     .B(b_grid[i][j]),
                     .clk(clk),
-                    .reset(reset),
+                    .reset(reset || start),
                     .S(acc_grid[i][j])
                  );
             end

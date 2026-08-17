@@ -7,7 +7,7 @@ module skew_buffer_vertical #(
 ) (
     input  logic                clk,
     input  logic                reset,
-    input  logic [DATA_W-1:0]   in_data  [ROWS-1:0][COLS-1:0],
+    input  logic [DATA_W-1:0]   in_data  [ROWS][COLS],
     output logic [15:0]         out_data [ROWS+COLS-2:0][COLS-1:0]
 );
 

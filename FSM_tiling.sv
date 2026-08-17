@@ -41,16 +41,18 @@ module FSM_tiling #(
     );
 
     // ---- FSM states ----------------------------------------------------------
-    localparam logic [6:0]
-        IDLE       = 7'b0000000,
-        LD_HBM     = 7'b0000001,
-        LD_BRAM    = 7'b0000010,
-        LD_LUTRAM  = 7'b0000100,
-        SYST_MULT  = 7'b0001000,
-        ACCUMULATE = 7'b0010000,
-        SOFTMAX_V  = 7'b0100000;
+    localparam logic [7:0]
+        IDLE       = 8'b00000000,
+        LD_HBM     = 8'b00000001,
+        LD_BRAM    = 8'b00000010,
+        LD_LUTRAM  = 8'b00000100,
+        SYST_MULT  = 8'b00001000,
+        ACCUMULATE = 8'b00010000,
+        SOFTMAX_V  = 8'b00100000,
+        ST_BRAM    = 8'b01000000,
+        ST_HBM     = 8'b10000000;
 
-    logic [6:0] state, state_d1;
+    logic [7:0] state, state_d1;
 
     // ---- Load-stage handshakes (Q, K, V) -------------------------------------
     logic LD_HBM_start_q,    LD_HBM_start_k,    LD_HBM_start_v;
@@ -59,6 +61,7 @@ module FSM_tiling #(
     logic LD_BRAM_done_q,    LD_BRAM_done_k,    LD_BRAM_done_v;
     logic LD_LUTRAM_start_q, LD_LUTRAM_start_k, LD_LUTRAM_start_v;
     logic LD_LUTRAM_done_q,  LD_LUTRAM_done_k,  LD_LUTRAM_done_v;
+    logic ST_BRAM_start_o, ST_BRAM_done_o;
 
     logic systolic_mult_start;
     logic logit_mult_done;
@@ -100,7 +103,8 @@ module FSM_tiling #(
                 SOFTMAX_V:  state <= softv_done
                                         ? (matrix_complete ? IDLE : LD_HBM)     // next (i,j)
                                         : SOFTMAX_V;
-                default:    state <= IDLE;
+                ST_BRAM: state <= ST_BRAM_done_o ? ST_HBM : ST_BRAM;             
+            default:    state <= IDLE;
             endcase
         end
     end
@@ -111,17 +115,22 @@ module FSM_tiling #(
     assign busy = (state != IDLE);
 
     // ---- Per-stage START pulses (1 cycle on state entry) --------------------
-    logic entered_hbm, entered_bram, entered_lutram, entered_syst, entered_acc, entered_softv;
-    assign entered_hbm    = (state == LD_HBM)    && (state_d1 != LD_HBM);
-    assign entered_bram   = (state == LD_BRAM)   && (state_d1 != LD_BRAM);
-    assign entered_lutram = (state == LD_LUTRAM) && (state_d1 != LD_LUTRAM);
-    assign entered_syst   = (state == SYST_MULT) && (state_d1 != SYST_MULT);
-    assign entered_acc    = (state == ACCUMULATE)&& (state_d1 != ACCUMULATE);
-    assign entered_softv  = (state == SOFTMAX_V) && (state_d1 != SOFTMAX_V);
+    logic entered_hbm, entered_bram, entered_lutram, entered_syst, entered_acc, entered_softv, entered_st_bram;
+    assign entered_hbm     = (state == LD_HBM)    && (state_d1 != LD_HBM);
+    assign entered_bram    = (state == LD_BRAM)   && (state_d1 != LD_BRAM);
+    assign entered_lutram  = (state == LD_LUTRAM) && (state_d1 != LD_LUTRAM);
+    assign entered_syst    = (state == SYST_MULT) && (state_d1 != SYST_MULT);
+    assign entered_acc     = (state == ACCUMULATE)&& (state_d1 != ACCUMULATE);
+    assign entered_softv   = (state == SOFTMAX_V) && (state_d1 != SOFTMAX_V);
+    assign entered_st_bram = (state == ST_BRAM)   && (state_d1 != ST_BRAM);
+    assign entered_st_hbm = (state == ST_HBM)   && (state_d1 != ST_HBM);
+
 
     assign LD_HBM_start_q    = entered_hbm;
     assign LD_HBM_start_k    = entered_hbm;
     assign LD_HBM_start_v    = entered_hbm;
+    assign LD_HBM_start_o    = entered_st_hbm;
+
     assign LD_BRAM_start_q   = entered_bram;
     assign LD_BRAM_start_k   = entered_bram;
     assign LD_BRAM_start_v   = entered_bram;
@@ -130,6 +139,7 @@ module FSM_tiling #(
     assign LD_LUTRAM_start_v = entered_lutram;
     assign systolic_mult_start = entered_syst;
     assign acc_start           = entered_acc;
+    assign ST_BRAM_start_o = entered_st_bram;
 
     // ---- Tile index advance --------------------------------------------------
     // k advances while building the logit tile; j/i advance after the flash stage.
@@ -157,6 +167,8 @@ module FSM_tiling #(
     logic         apb_complete_q, apb_complete_k, apb_complete_v;
 
     logic         rw_read [16];
+    logic         rw_write [16];
+    
     logic [255:0] wdata_zero [16];
     always_comb begin
         for (int c = 0; c < 16; c++) begin
@@ -188,6 +200,14 @@ module FSM_tiling #(
         .read_data_out(beats_v), .read_resp_out(read_resp_v),
         .apb_complete_0(apb_complete_v), .AWADDR_TEST(), .ARADDR_TEST(),
         .done(LD_HBM_done_v)
+    );
+    HBM_to_BRAM #(.MEM_FILE(V_MEM_FILE), .NUM_TC(COLS)) HBM_to_BRAM_o (
+        .read_block_address(block_addr_o), .write_block_address(block_addr_o),
+        .write_data(wdata_zero), .RW_en(rw_write), .start(LD_HBM_start_o),
+        .clk(clk), .reset(reset), .HBM_REF_CLK_0(clk), .APB_0_PCLK(clk),
+        .read_data_out(beats_o), .read_resp_out(read_resp_o),
+        .apb_complete_0(apb_complete_o), .AWADDR_TEST(), .ARADDR_TEST(),
+        .done(LD_HBM_done_o)
     );
 
     // =========================================================================
@@ -263,6 +283,7 @@ module FSM_tiling #(
     // Scale the logit tile by 1/2^SCALE_SHIFT via BF16 exponent subtraction
     // (exact for the /4 power-of-two case; underflow -> signed zero).
     logic [15:0] scaled_logit [16][16];
+    logic[15:0] scaling_factor;
     // Logit-only test: bypass the 1/sqrt(D) scale (softmax/output path not checked
     // in this run). Restore the square_root + BF16_DIV_Unit scaling below once
     // square_root.sv exists in the build. (Also fixes logit -> logit_tile_lut.)
@@ -278,7 +299,7 @@ module FSM_tiling #(
              end
          end
      endgenerate
-    logic[15:0] scaling_factor;
+    
 //    always_comb begin
 //        for (int r = 0; r < 16; r++)
 //            for (int c = 0; c < 16; c++) begin
@@ -307,13 +328,14 @@ module FSM_tiling #(
     logic [3:0]  sm_row;
     logic        sm_start, sm_done, sm_done_d1;
     logic [15:0] sm_m_out, sm_d_out, sm_o_out [16];
-    logic [15:0] sm_logits [15:0];      // matches softermax's descending logits port
+    logic [15:0] sm_logits [16][15:0];      // matches softermax's descending logits port
 
     assign sm_start_sqrt_gated = sm_start && sqrt_done;
 
     always_comb
-        for (int c = 0; c < 16; c++)
-            sm_logits[c] = scaled_logit[sm_row][c];
+        for (int r = 0; r < 16; r++)
+            for (int c = 0; c < 16; c++)
+                sm_logits[r][c] = scaled_logit[sm_row][c];
 
     logic sm_capture;
     assign sm_capture = sm_done && !sm_done_d1;   // rising edge = pass complete
@@ -326,7 +348,10 @@ module FSM_tiling #(
         .logits_out(), .done(sm_done), .V_out()
     );
     
-    square_root #(.dimension(COLS))
+    // Attention scale is 1/sqrt(D), and D = COLS*16 (COLS counts 16-wide contraction
+    // TILES, not features). Passing COLS gave sqrt(8)=2.828 instead of sqrt(128)=11.314
+    // -- a 4x under-scale that made the softmax far too sharp.
+    square_root #(.dimension(COLS*16))
     sqrt_scale_inst
     (
         .clk(clk),
