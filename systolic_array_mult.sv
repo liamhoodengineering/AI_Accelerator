@@ -46,19 +46,33 @@ module systolic_array_mult#(
     parameter int ROWS = 16,
     parameter int COLS = 16
     )(
-    input logic start,
     input logic reset,
     input logic clk,
+    input logic start,
     input logic[15:0] array_A[ROWS][COLS],
     input logic[15:0] array_B[ROWS][COLS],
     output logic[15:0] c_matrix[ROWS][COLS],
     output logic done_out
     );
-   
+
     localparam int SKEW_W = ROWS + COLS - 1;   // 31 for 16x16
 
     logic[15:0] a;
     logic done;
+
+    // ---- Per-pass run control -------------------------------------------------
+    // A `start` pulse kicks off one multiply pass: PE accumulators and the skew
+    // pointers are cleared (pass_reset), the internal counter runs for one pass,
+    // and `done`/`done_out` assert when the result is settled.
+    logic running;
+    always_ff @(posedge clk) begin
+        if (reset)      running <= 1'b0;
+        else if (start) running <= 1'b1;
+        else if (done)  running <= 1'b0;
+    end
+    // Clear datapath state at global reset or at the launch of a new pass.
+    wire pass_reset = reset | start;
+    assign done_out = done;
 
     logic[15:0] array_A_out[ROWS-1:0][ROWS+COLS-2:0];
     logic[15:0] array_B_out[ROWS+COLS-2:0][COLS-1:0];
@@ -68,20 +82,23 @@ module systolic_array_mult#(
     // column of array_A_out / row of array_B_out that feeds the grid edge.
     logic [5:0] col_ptr;
     always_ff @(posedge clk) begin
-        if (reset||start)                       col_ptr <= '0;
-        else if (col_ptr < (SKEW_W - 1)) col_ptr <= col_ptr + 6'd1;
+        if (pass_reset)                              col_ptr <= '0;
+        else if (running && col_ptr < (SKEW_W - 1))  col_ptr <= col_ptr + 6'd1;
     end
    
+     // Reset the skew buffers on pass_reset too, so the whole array (skew fill,
+     // col_ptr, grid, PEs, counter) restarts coherently on each `start` pulse and
+     // reproduces the verified from-reset timing.
      skew_buffer_horizontal skew_hor_inst(
          .clk(clk),
-         .reset(reset),
+         .reset(pass_reset),
          .in_data(array_A),
              .out_data(array_A_out)
      );
-     
+
      skew_buffer_vertical skew_vert_inst(
          .clk(clk),
-         .reset(reset),
+         .reset(pass_reset),
          .in_data(array_B),
          .out_data(array_B_out)
      );
@@ -97,11 +114,36 @@ module systolic_array_mult#(
 //     );
    
      counter counter_inst(
-        .reset(reset || start),
+        .reset(reset),
+        .en(running),
         .clk(clk),
-        .done(done_out)
+        .done(done)
 );
-
+//    always_ff @(posedge clk)
+//    begin
+//        if(reset)begin
+//            foreach(array_A[i,j])
+//            begin
+//                array_A[i][j] <= 16'hFFFF;
+//                array_B[i][j] <= 16'hFFFF;
+//            end
+//           // done <= 1'b0;
+//        end
+//        else
+//        begin
+////            array_A[0] <= {0,array_A[0][0:3]};
+////            array_A[1] <= {0,array_A[1][0:3]};
+////            array_A[2] <= {0,array_A[2][0:3]};
+            
+////            array_B[4] <= array_B[3];
+////            array_B[3] <= array_B[2];
+////            array_B[2] <= array_B[1];
+////            array_B[1] <= array_B[0];
+////            array_B[0] <= '{0,0,0};
+////            foreach(array_A_out[i,j])
+////                array_A_out[i][j] <= 16'b0;
+//        end
+//    end
 
     logic[15:0] a_grid   [ROWS][COLS];
     logic[15:0] b_grid   [ROWS][COLS];
@@ -112,8 +154,7 @@ module systolic_array_mult#(
 
     always_ff @(posedge clk)
     begin
-        if(reset || start) begin
-           
+        if(pass_reset) begin
             for(int i = 0; i < ROWS; i++) begin
                 for(int j = 0; j < COLS; j++) begin
                     a_grid[i][j]   <= 16'b0;
@@ -122,9 +163,9 @@ module systolic_array_mult#(
                 end
             end
         end
-        else
+        else if (running)
         begin
-            if(done_out)
+            if(done)
                 c_matrix <= acc_grid;
             else
             begin
@@ -159,7 +200,7 @@ module systolic_array_mult#(
                     .A(a_grid[i][j]),
                     .B(b_grid[i][j]),
                     .clk(clk),
-                    .reset(reset || start),
+                    .reset(pass_reset),
                     .S(acc_grid[i][j])
                  );
             end
@@ -173,18 +214,20 @@ endmodule
 
 
 module counter(
-    input logic reset, 
+    input logic reset,
+    input logic en,
     input logic clk,
     output logic done
 );
 
     logic[5:0] counter;
-    
+
+    // Hold at 0 until enabled (one multiply pass); reset re-arms for the next.
     always_ff @(posedge clk)
     begin
-         counter <= reset ? 6'b0 : (counter + 6'd1);
+         counter <= (reset | ~en) ? 6'b0 : (counter + 6'd1);
     end
-    
+
     assign done = (counter == 6'd47) ? 1'b1 : 1'b0;
 
 endmodule

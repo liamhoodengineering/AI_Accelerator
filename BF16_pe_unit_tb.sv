@@ -38,7 +38,7 @@ module BF16_pe_unit_tb(
         errors = 0;
 
         // Case 1: A>0, B>0, multiplier carry-out (1.5 * 1.5 = 2.25)
-        check(16'h3FC0, 16'h3FC0, 16'h0000, 16'h4110, "C1a 1.5*1.5 + 0");
+        check(16'h3FC0, 16'h3FC0, 16'h0000, 16'h4010, "C1a 1.5*1.5 + 0");
         check(16'h3FC0, 16'h3FC0, 16'h3FC0, 16'h4070, "C1b 1.5*1.5 + 1.5");
         check(16'h3FC0, 16'h3FC0, 16'hBF80, 16'h3FA0, "C1c 1.5*1.5 + (-1)");
 
