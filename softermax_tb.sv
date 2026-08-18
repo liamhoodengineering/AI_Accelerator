@@ -1,18 +1,30 @@
 `timescale 1ns / 1ps
 
-// Directed test for `softermax` driving the 16-element bf16 logits vector
-// supplied by the user. `max` is checked bit-exact; `sum` is checked against
-// the EXACT online-softmax reference with a 5% relative tolerance to absorb
-// the polynomial approximation in `fractional_bit_shift` and bf16 round-off.
+// File-driven test for `softermax`.
+//
+// Reads 15 rows of 16 BF16 logits from input.txt and the matching Python
+// softmax results (base-e, softmax_3pass) from output.txt. For each row the
+// DUT runs its 16-cycle online max/sum recursion; the TB then computes the
+// final probabilities in real arithmetic as 2^(x_i - dut.max) / dut.sum
+// (the DUT's `logits_out` integer division is non-functional) and compares
+// them element-wise against the reference, accumulating margin-of-error
+// statistics.
+//
+// NOTE on expected error: the Python reference uses base-e exp; the DUT is a
+// base-2 "softermax". Tail probabilities differ systematically between the
+// two bases — the report quantifies exactly that margin.
 
 module softermax_tb();
+
+    localparam string IN_FILE   = "C:/Users/egypt/AI_Accelerator/python_verification/input.txt";
+    localparam string OUT_FILE  = "C:/Users/egypt/AI_Accelerator/python_verification/output.txt";
+    localparam int    N_ROWS    = 15;
+    localparam real   TOLERANCE = 0.05;   // 5% relative-error threshold for counting
 
     logic         clk;
     logic         Reset;
     logic [15:0]  logits     [15:0];
     logic [15:0]  logits_out [15:0];
-
-    int errors;
 
     softermax dut(
         .logits(logits),
@@ -25,12 +37,10 @@ module softermax_tb();
     always #5 clk = ~clk;
 
     // ---------------------------------------------------------------
-    // Stimulus and reference tables (index 0 = reset state)
+    // Golden data
     // ---------------------------------------------------------------
-    logic [15:0] stim_logits [0:15];
-    logic [15:0] exp_max     [0:15];
-    logic [15:0] exp_sum     [0:15];   // closest bf16 to the real value (display only)
-    real         exp_sum_r   [0:15];   // floating-point reference for tolerance check
+    logic [15:0] in_vecs  [N_ROWS][16];
+    logic [15:0] ref_vecs [N_ROWS][16];
 
     // bf16 -> real conversion (treats exp==0 as zero)
     function automatic real bf16_to_real(input logic [15:0] b);
@@ -52,130 +62,210 @@ module softermax_tb();
         end
     endfunction
 
-    task automatic check_cycle(input int k);
-        real got_r;
-        real exp_r;
-        real rel_err;
+    // "0x4183" -> 16'h4183
+    function automatic logic [15:0] parse_hex(input string s);
+        string t;
         begin
-            $display("--- cycle %0d ---", k);
-            $display("  REG    counter=%0d  max=%h  sum=%h",
-                     dut.counter, dut.max, dut.sum);
-            $display("  COMB   delta=%h  delta_int=%0d  delta_frac=%h pow2_neg_delta=%h  frac_out=%h  pow2_neg_delta_full=%h  new_max=%b",
-                     dut.delta, dut.delta_int, dut.delta_frac,
-                     dut.pow2_neg_delta, dut.frac_out, dut.pow2_neg_delta_full,
-                     dut.new_max);
+            t = s;
+            if (t.len() > 2 && t.substr(0, 1) == "0x")
+                t = t.substr(2, t.len() - 1);
+            return t.atohex();
+        end
+    endfunction
 
-            // ----- max: bit-exact -----
-            if (dut.max === exp_max[k])
-                $display("  PASS   max = %h", dut.max);
-            else begin
-                $display("  FAIL   max = %h  (expected %h)", dut.max, exp_max[k]);
-                errors++;
+    task automatic read_hex_file(input string path,
+                                 ref logic [15:0] dst [N_ROWS][16]);
+        int    fd, row, col, n;
+        string tok;
+        begin
+            fd = $fopen(path, "r");
+            if (fd == 0) $fatal(1, "cannot open %s", path);
+            row = 0; col = 0;
+            while (!$feof(fd) && row < N_ROWS) begin
+                n = $fscanf(fd, "%s", tok);
+                if (n == 1) begin
+                    dst[row][col] = parse_hex(tok);
+                    col++;
+                    if (col == 16) begin col = 0; row++; end
+                end
             end
-
-            // ----- sum: 5% relative tolerance vs EXACT reference -----
-            got_r = bf16_to_real(dut.sum);
-            exp_r = exp_sum_r[k];
-            rel_err = (got_r - exp_r) / exp_r;
-            if (rel_err < 0.0) rel_err = -rel_err;
-            if (rel_err < 0.05)
-                $display("  PASS   sum = %h (%.4f)  vs ref %h (%.4f)  rel_err=%.2f%%",
-                         dut.sum, got_r, exp_sum[k], exp_r, rel_err * 100.0);
-            else begin
-                $display("  FAIL   sum = %h (%.4f)  vs ref %h (%.4f)  rel_err=%.2f%%",
-                         dut.sum, got_r, exp_sum[k], exp_r, rel_err * 100.0);
-                errors++;
-            end
+            $fclose(fd);
+            if (row != N_ROWS)
+                $fatal(1, "%s: expected %0d rows of 16 values, got %0d complete rows",
+                       path, N_ROWS, row);
+            $display("loaded %0d rows from %s", N_ROWS, path);
         end
     endtask
 
+    // ---------------------------------------------------------------
+    // Error accumulators
+    // ---------------------------------------------------------------
+    real g_abs_sum, g_abs_max, g_rel_sum, g_rel_max;
+    int  g_abs_max_row, g_abs_max_el, g_rel_max_row, g_rel_max_el;
+    int  g_cmp_count, g_rel_count, g_over_tol;
+    int  max_errors;
+
+    // Hardware logits_out vs exact base-2 softmax accumulators
+    real h_abs_sum, h_abs_max, h_rel_sum, h_rel_max;
+    int  h_abs_max_row, h_abs_max_el, h_rel_max_row, h_rel_max_el;
+    int  h_cmp_count, h_rel_count, h_over_tol;
+
     initial begin
-        errors = 0;
+        g_abs_sum = 0.0;  g_abs_max = 0.0;
+        g_rel_sum = 0.0;  g_rel_max = 0.0;
+        g_cmp_count = 0;  g_rel_count = 0;  g_over_tol = 0;
+        max_errors = 0;
+        h_abs_sum = 0.0;  h_abs_max = 0.0;
+        h_rel_sum = 0.0;  h_rel_max = 0.0;
+        h_cmp_count = 0;  h_rel_count = 0;  h_over_tol = 0;
 
-        // -------- stimulus (user-supplied 16-element bf16 vector) --------
-        stim_logits[0]  = 16'hBFA8;   // -1.3125
-        stim_logits[1]  = 16'h402C;   // +2.6875
-        stim_logits[2]  = 16'h3EE0;   // +0.4375
-        stim_logits[3]  = 16'hC060;   // -3.5
-        stim_logits[4]  = 16'h3FF0;   // +1.875
-        stim_logits[5]  = 16'hBF30;   // -0.6875
-        stim_logits[6]  = 16'h4048;   // +3.125
-        stim_logits[7]  = 16'h3D80;   // +0.0625
-        stim_logits[8]  = 16'hC00C;   // -2.1875
-        stim_logits[9]  = 16'h3FA8;   // +1.3125
-        stim_logits[10] = 16'hBE40;   // -0.1875
-        stim_logits[11] = 16'h4080;   // +4.0
-        stim_logits[12] = 16'hBF80;   // -1.0
-        stim_logits[13] = 16'h400C;   // +2.1875
-        stim_logits[14] = 16'hC098;   // -4.75
-        stim_logits[15] = 16'h3F50;   // +0.8125
+        read_hex_file(IN_FILE,  in_vecs);
+        read_hex_file(OUT_FILE, ref_vecs);
 
-        // -------- expected `max` after each cycle (k=0 is post-Reset) --------
-        exp_max[0]  = 16'hBFA8;   // -1.3125 (reset)
-        exp_max[1]  = 16'h402C;   // +2.6875
-        exp_max[2]  = 16'h402C;
-        exp_max[3]  = 16'h402C;
-        exp_max[4]  = 16'h402C;
-        exp_max[5]  = 16'h402C;
-        exp_max[6]  = 16'h4048;   // +3.125
-        exp_max[7]  = 16'h4048;
-        exp_max[8]  = 16'h4048;
-        exp_max[9]  = 16'h4048;
-        exp_max[10] = 16'h4048;
-        exp_max[11] = 16'h4080;   // +4.0
-        exp_max[12] = 16'h4080;
-        exp_max[13] = 16'h4080;
-        exp_max[14] = 16'h4080;
-        exp_max[15] = 16'h4080;
+        for (int row = 0; row < N_ROWS; row++) begin : per_row
+            real dut_max_r, dut_sum_r, true_max_r;
+            real dut_out_r, ref_r, abs_err, rel_err;
+            real row_abs_max, row_rel_max, prob_total;
+            real exact2_num [16];      // 2^(x_i - true_max)
+            real exact2_out [16];      // exact base-2 softmax reference
+            real exact2_den;
+            real hw_out_r, hw_abs, hw_rel, hw_prob_total, hw_row_rel_max;
 
-        // -------- expected `sum`: closest bf16 (display) + real (tolerance) --------
-        exp_sum[0]  = 16'h3F80; exp_sum_r[0]  = 1.0000;
-        exp_sum[1]  = 16'h3F88; exp_sum_r[1]  = 1.0625;
-        exp_sum[2]  = 16'h3FA3; exp_sum_r[2]  = 1.2727;
-        exp_sum[3]  = 16'h3FA5; exp_sum_r[3]  = 1.2864;
-        exp_sum[4]  = 16'h3FED; exp_sum_r[4]  = 1.8548;
-        exp_sum[5]  = 16'h3FFA; exp_sum_r[5]  = 1.9512;
-        exp_sum[6]  = 16'h401C; exp_sum_r[6]  = 2.4414;
-        exp_sum[7]  = 16'h4024; exp_sum_r[7]  = 2.5610;
-        exp_sum[8]  = 16'h4026; exp_sum_r[8]  = 2.5862;
-        exp_sum[9]  = 16'h4038; exp_sum_r[9]  = 2.8708;
-        exp_sum[10] = 16'h403E; exp_sum_r[10] = 2.9715;
-        exp_sum[11] = 16'h4028; exp_sum_r[11] = 2.6206;
-        exp_sum[12] = 16'h402A; exp_sum_r[12] = 2.6519;
-        exp_sum[13] = 16'h403C; exp_sum_r[13] = 2.9365;
-        exp_sum[14] = 16'h403C; exp_sum_r[14] = 2.9388;
-        exp_sum[15] = 16'h4043; exp_sum_r[15] = 3.0485;
+            // Drive this row's logits
+            for (int i = 0; i < 16; i++) logits[i] = in_vecs[row][i];
 
-        // -------- drive into DUT --------
-        for (int i = 0; i < 16; i++) logits[i] = stim_logits[i];
-
-        // -------- Reset --------
-        Reset = 1'b1;
-        @(posedge clk); #1;
-        $display("=== After Reset ===");
-        $display("  REG    counter=%0d  max=%h  sum=%h",
-                 dut.counter, dut.max, dut.sum);
-        if (dut.max === exp_max[0] && dut.sum === exp_sum[0] && dut.counter === 4'd1)
-            $display("  PASS   reset state");
-        else begin
-            $display("  FAIL   reset state  (max=%h sum=%h counter=%0d, expected max=%h sum=%h counter=1)",
-                     dut.max, dut.sum, dut.counter, exp_max[0], exp_sum[0]);
-            errors++;
-        end
-
-        // -------- 15 post-Reset cycles --------
-        Reset = 1'b0;
-        for (int k = 1; k <= 15; k++) begin
+            // Reset one cycle, then 15 processing cycles (indices 1..15)
+            Reset = 1'b1;
             @(posedge clk); #1;
-            check_cycle(k);
+            Reset = 1'b0;
+            repeat (15) @(posedge clk);
+            #1;
+
+            dut_max_r = bf16_to_real(dut.max);
+            dut_sum_r = bf16_to_real(dut.sum);
+
+            // Sanity: dut.max must be the true row max (bit-exact check via value)
+            true_max_r = bf16_to_real(in_vecs[row][0]);
+            for (int i = 1; i < 16; i++)
+                if (bf16_to_real(in_vecs[row][i]) > true_max_r)
+                    true_max_r = bf16_to_real(in_vecs[row][i]);
+            if (dut_max_r != true_max_r) begin
+                $display("row %2d: FAIL max — dut.max=%h (%.4f), true max %.4f",
+                         row, dut.max, dut_max_r, true_max_r);
+                max_errors++;
+            end
+
+            // Element-wise compare: TB-side softmax vs reference file
+            row_abs_max = 0.0;
+            row_rel_max = 0.0;
+            prob_total  = 0.0;
+            for (int i = 0; i < 16; i++) begin
+                dut_out_r = (2.0 ** (bf16_to_real(in_vecs[row][i]) - dut_max_r)) / dut_sum_r;
+                ref_r     = bf16_to_real(ref_vecs[row][i]);
+                prob_total += dut_out_r;
+
+                abs_err = (dut_out_r > ref_r) ? (dut_out_r - ref_r) : (ref_r - dut_out_r);
+                g_abs_sum += abs_err;
+                g_cmp_count++;
+                if (abs_err > g_abs_max) begin
+                    g_abs_max = abs_err; g_abs_max_row = row; g_abs_max_el = i;
+                end
+                if (abs_err > row_abs_max) row_abs_max = abs_err;
+
+                if (ref_r > 1e-9) begin
+                    rel_err = abs_err / ref_r;
+                    g_rel_sum += rel_err;
+                    g_rel_count++;
+                    if (rel_err > g_rel_max) begin
+                        g_rel_max = rel_err; g_rel_max_row = row; g_rel_max_el = i;
+                    end
+                    if (rel_err > row_rel_max) row_rel_max = rel_err;
+                    if (rel_err > TOLERANCE) g_over_tol++;
+                end
+            end
+
+            $display("row %2d: max=%h (%.4f)  sum=%h (%.4f)  prob_total=%.4f  row_abs_max=%.6f  row_rel_max=%.2f%%",
+                     row, dut.max, dut_max_r, dut.sum, dut_sum_r,
+                     prob_total, row_abs_max, row_rel_max * 100.0);
+
+            // ------- Hardware logits_out vs exact base-2 softmax -------
+            exact2_den = 0.0;
+            for (int i = 0; i < 16; i++) begin
+                exact2_num[i] = 2.0 ** (bf16_to_real(in_vecs[row][i]) - true_max_r);
+                exact2_den += exact2_num[i];
+            end
+            for (int i = 0; i < 16; i++)
+                exact2_out[i] = exact2_num[i] / exact2_den;
+
+            hw_prob_total  = 0.0;
+            hw_row_rel_max = 0.0;
+            for (int i = 0; i < 16; i++) begin
+                hw_out_r = bf16_to_real(dut.logits_out[i]);
+                hw_prob_total += hw_out_r;
+
+                hw_abs = (hw_out_r > exact2_out[i]) ? (hw_out_r - exact2_out[i])
+                                                    : (exact2_out[i] - hw_out_r);
+                h_abs_sum += hw_abs;
+                h_cmp_count++;
+                if (hw_abs > h_abs_max) begin
+                    h_abs_max = hw_abs; h_abs_max_row = row; h_abs_max_el = i;
+                end
+
+                if (exact2_out[i] > 1e-9) begin
+                    hw_rel = hw_abs / exact2_out[i];
+                    h_rel_sum += hw_rel;
+                    h_rel_count++;
+                    if (hw_rel > h_rel_max) begin
+                        h_rel_max = hw_rel; h_rel_max_row = row; h_rel_max_el = i;
+                    end
+                    if (hw_rel > hw_row_rel_max) hw_row_rel_max = hw_rel;
+                    if (hw_rel > TOLERANCE) h_over_tol++;
+                end
+            end
+            $display("        HW logits_out: hw_prob_total=%.4f  hw_row_rel_max=%.2f%%",
+                     hw_prob_total, hw_row_rel_max * 100.0);
         end
+
+        // ---------------------------------------------------------------
+        // Margin-of-error report
+        // ---------------------------------------------------------------
+        $display("");
+        $display("=== Margin of Error (DUT base-2 online softmax vs Python base-e reference) ===");
+        $display("rows processed        : %0d", N_ROWS);
+        $display("elements compared     : %0d (relative-error stats on %0d nonzero refs)",
+                 g_cmp_count, g_rel_count);
+        $display("mean absolute error   : %.6f", g_abs_sum / g_cmp_count);
+        $display("max  absolute error   : %.6f   (row %0d, elem %0d)",
+                 g_abs_max, g_abs_max_row, g_abs_max_el);
+        $display("mean relative error   : %.2f%%", (g_rel_sum / g_rel_count) * 100.0);
+        $display("max  relative error   : %.2f%%   (row %0d, elem %0d)",
+                 g_rel_max * 100.0, g_rel_max_row, g_rel_max_el);
+        $display("elements > %.0f%% rel err : %0d / %0d",
+                 TOLERANCE * 100.0, g_over_tol, g_rel_count);
+        if (max_errors != 0)
+            $display("WARNING: %0d row(s) had wrong dut.max — online max recursion broken", max_errors);
 
         $display("");
-        if (errors == 0)
-            $display("==== PASS: softermax matches EXACT reference within 5%% across 16 logits ====");
-        else
-            $display("==== FAIL: %0d mismatch(es) vs EXACT reference ====", errors);
+        $display("=== Hardware logits_out vs exact base-2 softmax ===");
+        $display("elements compared     : %0d (relative-error stats on %0d nonzero refs)",
+                 h_cmp_count, h_rel_count);
+        $display("mean absolute error   : %.6f", h_abs_sum / h_cmp_count);
+        $display("max  absolute error   : %.6f   (row %0d, elem %0d)",
+                 h_abs_max, h_abs_max_row, h_abs_max_el);
+        $display("mean relative error   : %.9f%%", (h_rel_sum / h_rel_count) * 100.0);
+        $display("max  relative error   : %.9f%%   (row %0d, elem %0d)",
+                 h_rel_max * 100.0, h_rel_max_row, h_rel_max_el);
+        $display("elements > %.0f%% rel err : %0d / %0d",
+                 TOLERANCE * 100.0, h_over_tol, h_rel_count);
+        $display("");
 
+        $finish;
+    end
+
+    // Watchdog
+    initial begin
+        #50_000;
+        $error("TIMEOUT");
         $finish;
     end
 
