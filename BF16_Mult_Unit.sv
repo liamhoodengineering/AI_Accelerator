@@ -98,16 +98,21 @@ module BF16_Mult_Unit(
     
     always_comb
     begin
-        c_sign     = A[15] ^ B[15];
-        c_mant     = {1'b1, A[6:0]} * {1'b1, B[6:0]};
-        c_mant_tmp = (c_mant[15] == 1'b0) ? c_mant[13:7] : c_mant[14:8];
-        c_exp      = A[14:7] + B[14:7] - 8'd127 + ((8'b00000001) & {8{c_mant[15]}});
-
-        if (A[14:0] == 15'b0 || B[14:0] == 15'b0) begin
-            C = {c_sign, 15'b0};   // signed zero
-        end
-        else begin
-            C = {c_sign, c_exp, c_mant_tmp};
+        if((A == 16'hFF80) || (B == 16'hFF80))
+            C = 16'hFF80;
+        else
+        begin
+            c_sign     = A[15] ^ B[15];
+            c_mant     = {1'b1, A[6:0]} * {1'b1, B[6:0]};
+            c_mant_tmp = (c_mant[15] == 1'b0) ? c_mant[13:7] : c_mant[14:8];
+            c_exp      = A[14:7] + B[14:7] - 8'd127 + ((8'b00000001) & {8{c_mant[15]}});
+    
+            if (A[14:0] == 15'b0 || B[14:0] == 15'b0) begin
+                C = {c_sign, 15'b0};   // signed zero
+            end
+            else begin
+                C = {c_sign, c_exp, c_mant_tmp};
+            end
         end
     end
     
